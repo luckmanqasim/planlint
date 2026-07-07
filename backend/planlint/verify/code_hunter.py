@@ -4,6 +4,8 @@ full ancestral chain (Chapter → Section → sub-clause)."""
 
 from __future__ import annotations
 
+import asyncio
+
 from planlint.models import PhysicalAsset
 
 
@@ -22,7 +24,8 @@ async def hunt(
     k: int | None = None,
 ) -> list[dict]:
     """Returns [{clause, score, ancestors}] ordered by relevance."""
-    embedding = embedder.embed_one(_query_text(asset))
+    # ONNX inference is sync CPU-bound; keep it off the event loop.
+    embedding = await asyncio.to_thread(embedder.embed_one, _query_text(asset))
     hits = await repo.vector_search(project_id, embedding, k)
     results = []
     for hit in hits:

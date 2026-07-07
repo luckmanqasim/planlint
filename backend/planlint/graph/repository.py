@@ -56,6 +56,34 @@ class GraphRepository:
             name=name,
         )
 
+    async def get_project(self, project_id: str) -> dict | None:
+        rows = await self._run(
+            "MATCH (p:Project {id: $id}) RETURN p {.id, .name} AS p", id=project_id
+        )
+        return rows[0]["p"] if rows else None
+
+    async def delete_project(self, project_id: str) -> list[str] | None:
+        """Delete a project and everything under it: documents, sheets, assets,
+        regulations, constraints, and (via DETACH) all verdict edges. Returns
+        the document file paths so the caller can clean up disk, or None if the
+        project doesn't exist."""
+        rows = await self._run(
+            "MATCH (p:Project {id: $pid}) "
+            "OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) "
+            "OPTIONAL MATCH (d)-[:HAS_SHEET]->(s:Sheet) "
+            "OPTIONAL MATCH (s)-[:CONTAINS]->(a:PhysicalAsset) "
+            "OPTIONAL MATCH (d)-[:HAS_CLAUSE]->(r:Regulation) "
+            "OPTIONAL MATCH (r)-[:DEFINES]->(c:Constraint) "
+            "WITH p, [x IN collect(DISTINCT d) | x.path] AS paths, "
+            "collect(DISTINCT d) + collect(DISTINCT s) + collect(DISTINCT a) "
+            "+ collect(DISTINCT r) + collect(DISTINCT c) AS descendants "
+            "FOREACH (n IN descendants | DETACH DELETE n) "
+            "DETACH DELETE p "
+            "RETURN paths",
+            pid=project_id,
+        )
+        return rows[0]["paths"] if rows else None
+
     async def list_projects(self) -> list[dict]:
         return await self._run(
             "MATCH (p:Project) "
@@ -95,6 +123,29 @@ class GraphRepository:
                 pid=project_id,
             )
         ]
+
+    async def delete_document(self, document_id: str) -> dict | None:
+        """Delete one document and its subtree. A floorplan owns sheets/assets,
+        a codebook owns regulations/constraints; the OPTIONAL MATCHes cover
+        both. DETACH DELETE also removes verdict edges touching the deleted
+        nodes, so surviving assets simply lose verdicts against a deleted
+        codebook — no orphan edges are possible. Returns {path, kind,
+        project_id} for disk cleanup, or None if the document doesn't exist."""
+        rows = await self._run(
+            "MATCH (d:Document {id: $id}) "
+            "OPTIONAL MATCH (d)-[:HAS_SHEET]->(s:Sheet) "
+            "OPTIONAL MATCH (s)-[:CONTAINS]->(a:PhysicalAsset) "
+            "OPTIONAL MATCH (d)-[:HAS_CLAUSE]->(r:Regulation) "
+            "OPTIONAL MATCH (r)-[:DEFINES]->(c:Constraint) "
+            "WITH d, d.path AS path, d.kind AS kind, d.project_id AS project_id, "
+            "collect(DISTINCT s) + collect(DISTINCT a) "
+            "+ collect(DISTINCT r) + collect(DISTINCT c) AS descendants "
+            "FOREACH (n IN descendants | DETACH DELETE n) "
+            "DETACH DELETE d "
+            "RETURN path, kind, project_id",
+            id=document_id,
+        )
+        return rows[0] if rows else None
 
     async def set_document_manual_scale(self, document_id: str, scale_text: str) -> None:
         """Store a user-entered scale and force re-ingestion: existing sheets

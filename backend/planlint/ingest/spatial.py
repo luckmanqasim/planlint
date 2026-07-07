@@ -8,6 +8,7 @@ Hybrid strategy per page:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -26,6 +27,18 @@ async def _noop_emit(_: RunEvent) -> None:
     return None
 
 
+def _analyze_page(page) -> tuple[str, list, list, bytes | None]:
+    """The sync CPU-bound share of one page — geometry extraction and (when a
+    real VLM will be called) rasterization — bundled into a single thread hop
+    so the event loop stays responsive during ingestion."""
+    page_type = geometry.detect_pdf_type(page)
+    primitives, labels = geometry.extract_primitives(page)
+    png: bytes | None = None
+    if not settings.planlint_fake_llm:
+        png = page.get_pixmap(matrix=pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)).tobytes("png")
+    return page_type, primitives, labels, png
+
+
 async def ingest_floorplan(
     pdf_path: Path,
     document: dict,
@@ -41,18 +54,18 @@ async def ingest_floorplan(
     document_id = document["id"]
     manual_scale_text = document.get("manual_scale_text")
     pdf_type: str | None = None
-    with pymupdf.open(pdf_path) as doc:
+    doc = await asyncio.to_thread(pymupdf.open, pdf_path)
+    try:
         total = len(doc)
-        for page_index, page in enumerate(doc):
-            page_type = geometry.detect_pdf_type(page)
+        for page_index in range(total):
+            page = doc[page_index]
+            page_type, primitives, labels, png = await asyncio.to_thread(_analyze_page, page)
             pdf_type = pdf_type or page_type
-            primitives, labels = geometry.extract_primitives(page)
 
             if settings.planlint_fake_llm:
                 vlm_page: VlmPage = fake_detect_from_labels(labels)
             else:
-                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM))
-                vlm_page = await detect_page(pixmap.tobytes("png"), model)
+                vlm_page = await detect_page(png, model)
 
             # Scale priority: manual override > deterministic text scan > VLM.
             scale_text = manual_scale_text or next(
@@ -70,6 +83,8 @@ async def ingest_floorplan(
                     )
                 )
 
+            # Snapping/measuring is cheap relative to parsing and rasterizing;
+            # not worth a thread hop per entity.
             assets: list[PhysicalAsset] = []
             for entity in vlm_page.entities:
                 if page_type == "vector":
@@ -114,5 +129,7 @@ async def ingest_floorplan(
                     progress=(page_index + 1) / total,
                 )
             )
+    finally:
+        doc.close()
     await repo.mark_ingested(document_id, pdf_type)
     return pdf_type

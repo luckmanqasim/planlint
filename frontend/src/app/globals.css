@@ -1,166 +1,30 @@
-:root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1d212b;
-  --border: #2a2f3a;
-  --text: #e6e9ef;
-  --text-dim: #9aa3b2;
-  --accent: #4f8cff;
-  --green: #2ecc71;
-  --red: #e74c3c;
-  --amber: #f39c12;
+@import "tailwindcss";
+
+/* PlanLint design tokens — dark-only. The palette IS the theme; no `dark:`
+   variants anywhere. Canvas drawing reads these same variables at runtime
+   via lib/verdicts.ts, so verdict colors have exactly one source of truth. */
+@theme {
+  --color-surface-0: #0b0d12; /* page background */
+  --color-surface-1: #12151c; /* panels, topbar */
+  --color-surface-2: #1a1e28; /* inputs, chips, hover */
+  --color-edge: #262c38; /* borders */
+  --color-ink: #e7eaf0; /* primary text */
+  --color-ink-dim: #98a1b3; /* secondary text */
+  --color-accent: #5b8cff;
+  --color-pass: #34d399; /* COMPLIES_WITH */
+  --color-fail: #f87171; /* VIOLATES */
+  --color-review: #fbbf24; /* NEEDS_REVIEW */
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-surface-0 text-ink text-sm antialiased;
+  }
 }
-
-html,
-body {
-  height: 100%;
-}
-
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-button {
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-button.secondary {
-  background: var(--panel-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-
-input[type="text"] {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 13px;
-}
-
-.container {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 32px 24px;
-}
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px;
-}
-
-.muted {
-  color: var(--text-dim);
-}
-
-.badge {
-  display: inline-block;
-  border-radius: 999px;
-  padding: 1px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-}
-
-.badge.COMPLIES_WITH { background: rgba(46, 204, 113, 0.15); color: var(--green); }
-.badge.VIOLATES { background: rgba(231, 76, 60, 0.15); color: var(--red); }
-.badge.NEEDS_REVIEW { background: rgba(243, 156, 18, 0.15); color: var(--amber); }
-
-/* dual-pane workspace */
-.workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 0;
-  height: calc(100vh - 56px);
-}
-
-.pane {
-  overflow: auto;
-  border-right: 1px solid var(--border);
-  background: var(--panel);
-}
-
-.pane:last-child {
-  border-right: none;
-}
-
-.topbar {
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-
-.clause {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  scroll-margin-top: 12px;
-}
-
-.clause.highlight {
-  background: rgba(79, 140, 255, 0.1);
-  border-left: 3px solid var(--accent);
-}
-
-.clause.violated {
-  background: rgba(231, 76, 60, 0.08);
-  border-left: 3px solid var(--red);
-}
-
-.clause h4 {
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-
-.clause .path {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-bottom: 6px;
-}
-
-.eventlog {
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 12px;
-  max-height: 180px;
-  overflow: auto;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-}
-
-.eventlog .warning { color: var(--amber); }
-.eventlog .error { color: var(--red); }

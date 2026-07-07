@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -33,6 +34,26 @@ class ApiFakeRepository(FakeRepository):
 
     async def get_document(self, document_id):
         return self.documents.get(document_id)
+
+    async def get_project(self, project_id):
+        return self.projects.get(project_id)
+
+    async def delete_project(self, project_id):
+        if project_id not in self.projects:
+            return None
+        del self.projects[project_id]
+        owned = [d_id for d_id, d in self.documents.items() if d["project_id"] == project_id]
+        return [self.documents.pop(d_id)["path"] for d_id in owned]
+
+    async def delete_document(self, document_id):
+        document = self.documents.pop(document_id, None)
+        if document is None:
+            return None
+        return {
+            "path": document["path"],
+            "kind": document["kind"],
+            "project_id": document["project_id"],
+        }
 
     async def results_payload(self, project_id, run_id=None):
         if project_id not in self.projects:
@@ -119,6 +140,80 @@ async def test_verify_streams_events_to_done(client):
 async def test_results_unknown_project_404(client):
     http, _ = client
     assert (await http.get("/projects/nope/results")).status_code == 404
+
+
+async def test_verify_unknown_project_404(client):
+    http, _ = client
+    assert (await http.post("/projects/proj-missing/verify")).status_code == 404
+
+
+async def test_upload_unknown_project_404_leaves_no_file(client, tmp_path):
+    http, _ = client
+    response = await http.post(
+        "/projects/proj-missing/documents",
+        params={"kind": "codebook"},
+        files={"file": ("x.pdf", b"%PDF", "application/pdf")},
+    )
+    assert response.status_code == 404
+    assert list(tmp_path.rglob("*")) == []  # nothing written to the data dir
+
+
+async def test_delete_project_removes_graph_and_files(client):
+    http, app = client
+    project = (await http.post("/projects", json={"name": "P"})).json()
+    upload = await http.post(
+        f"/projects/{project['id']}/documents",
+        params={"kind": "floorplan"},
+        files={"file": ("plan.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+    path = Path((await app.state.repo.get_document(upload.json()["id"]))["path"])
+    assert path.exists()
+
+    response = await http.delete(f"/projects/{project['id']}")
+    assert response.status_code == 204
+    assert not path.exists()
+    assert (await http.get(f"/projects/{project['id']}/results")).status_code == 404
+
+
+async def test_delete_project_unknown_404(client):
+    http, _ = client
+    assert (await http.delete("/projects/proj-doesnotexist")).status_code == 404
+
+
+async def test_delete_project_bad_id_404(client, tmp_path):
+    http, _ = client
+    # ids with path separators or spaces must be rejected before touching disk
+    assert (await http.delete("/projects/..%2F..%2Fpwn")).status_code == 404
+    assert (await http.delete("/projects/a b")).status_code == 404
+    assert list(tmp_path.rglob("*")) == []
+
+
+async def test_delete_document_removes_file(client):
+    http, app = client
+    project = (await http.post("/projects", json={"name": "P"})).json()
+    upload = await http.post(
+        f"/projects/{project['id']}/documents",
+        params={"kind": "codebook"},
+        files={"file": ("code.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+    document_id = upload.json()["id"]
+    path = Path((await app.state.repo.get_document(document_id))["path"])
+    assert path.exists()
+
+    assert (await http.delete(f"/documents/{document_id}")).status_code == 204
+    assert not path.exists()
+    assert await app.state.repo.get_document(document_id) is None
+    assert (await http.delete(f"/documents/{document_id}")).status_code == 404
+
+
+async def test_delete_project_evicts_its_runs(client):
+    http, app = client
+    project = (await http.post("/projects", json={"name": "P"})).json()
+    run_id = (await http.post(f"/projects/{project['id']}/verify")).json()["run_id"]
+    await asyncio.wait_for(app.state.runs.get(run_id).task, timeout=10)
+
+    assert (await http.delete(f"/projects/{project['id']}")).status_code == 204
+    assert app.state.runs.get(run_id) is None
 
 
 async def test_scale_patch_validates(client):

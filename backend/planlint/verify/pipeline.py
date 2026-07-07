@@ -3,6 +3,7 @@ asset. Failures isolate per asset — one bad extraction never kills a run."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -55,8 +56,14 @@ async def ingest_pending_documents(
         path = Path(document["path"])
         if document["kind"] == "codebook":
             await emit(RunEvent(stage="ingest:semantic", message=f"Parsing {document['filename']}"))
-            clauses = parse_codebook(path, settings.planlint_semantic_parser)
-            embeddings = embedder.embed([f"{c.hierarchy_path}\n{c.text}" for c in clauses])
+            # PDF parsing and embedding are sync CPU-bound: run them in
+            # threads so the SSE stream (and every other request) stays live.
+            clauses = await asyncio.to_thread(
+                parse_codebook, path, settings.planlint_semantic_parser
+            )
+            embeddings = await asyncio.to_thread(
+                embedder.embed, [f"{c.hierarchy_path}\n{c.text}" for c in clauses]
+            )
             await repo.upsert_clauses(document["id"], clauses, embeddings)
             await repo.mark_ingested(document["id"])
             await emit(

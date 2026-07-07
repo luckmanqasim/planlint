@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -18,6 +20,17 @@ from planlint.models import RunEvent
 from planlint.verify.pipeline import run_full
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+# project_id becomes a directory name under the data dir; reject anything
+# that couldn't have been produced by our own id generator.
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+
+def _validate_project_id(project_id: str) -> None:
+    if not _PROJECT_ID_RE.fullmatch(project_id):
+        raise HTTPException(404, "unknown project")
 
 
 def _repo(request: Request):
@@ -64,28 +77,65 @@ async def create_sample_project(request: Request):
     return {"id": project_id}
 
 
+@router.delete("/projects/{project_id}", status_code=204)
+async def delete_project(project_id: str, request: Request):
+    _validate_project_id(project_id)
+    paths = await _repo(request).delete_project(project_id)
+    if paths is None:
+        raise HTTPException(404, "unknown project")
+    request.app.state.runs.drop_project(project_id)
+    for path in paths:
+        if path:
+            Path(path).unlink(missing_ok=True)
+    shutil.rmtree(Path(settings.planlint_data_dir) / project_id, ignore_errors=True)
+
+
+@router.delete("/documents/{document_id}", status_code=204)
+async def delete_document(document_id: str, request: Request):
+    info = await _repo(request).delete_document(document_id)
+    if info is None:
+        raise HTTPException(404, "document not found")
+    if info.get("path"):
+        Path(info["path"]).unlink(missing_ok=True)
+
+
 @router.post("/projects/{project_id}/documents", status_code=201)
 async def upload_document(project_id: str, kind: str, file: UploadFile, request: Request):
+    _validate_project_id(project_id)
     if kind not in ("floorplan", "codebook"):
         raise HTTPException(422, "kind must be floorplan or codebook")
     filename = Path(file.filename or "upload.pdf").name
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(422, "only PDF files are supported")
+    if await _repo(request).get_project(project_id) is None:
+        raise HTTPException(404, "unknown project")
     document_id = f"doc-{uuid.uuid4().hex[:10]}"
-    destination = Path(settings.planlint_data_dir) / project_id / f"{document_id}-{filename}"
+    data_dir = Path(settings.planlint_data_dir).resolve()
+    destination = (data_dir / project_id / f"{document_id}-{filename}").resolve()
+    if not destination.is_relative_to(data_dir):
+        raise HTTPException(400, "invalid path")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as handle:
         shutil.copyfileobj(file.file, handle)
-    await _repo(request).create_document(document_id, project_id, kind, filename, str(destination))
+    try:
+        await _repo(request).create_document(
+            document_id, project_id, kind, filename, str(destination)
+        )
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
     return {"id": document_id, "kind": kind, "filename": filename}
 
 
 @router.post("/projects/{project_id}/verify", status_code=202)
 async def start_verification(project_id: str, request: Request):
+    _validate_project_id(project_id)
+    if await _repo(request).get_project(project_id) is None:
+        raise HTTPException(404, "unknown project")
     app = request.app
     run_id = f"run-{uuid.uuid4().hex[:10]}"
     manager = app.state.runs
-    manager.create(run_id)
+    manager.create(run_id, project_id)
 
     async def emit(event: RunEvent) -> None:
         await manager.emit(run_id, event)
@@ -102,7 +152,7 @@ async def start_verification(project_id: str, request: Request):
                 emit=emit,
             )
         except Exception:  # run_full already emitted the error event
-            pass
+            logger.exception("verification run %s failed", run_id)
 
     run = manager.get(run_id)
     run.task = asyncio.create_task(job())

@@ -74,7 +74,13 @@ async def seed_project(repo: GraphRepository, project_id: str) -> dict:
         measurements={Parameter.CLEAR_WIDTH: 30.0},
     )
     await repo.upsert_assets(sheet_id, [asset])
-    return {"asset": asset, "child": child, "embedder": embedder}
+    return {
+        "asset": asset,
+        "child": child,
+        "embedder": embedder,
+        "doc_plan": doc_plan,
+        "doc_code": doc_code,
+    }
 
 
 async def test_schema_init_is_idempotent(repo):
@@ -114,6 +120,58 @@ async def test_verdict_merge_is_idempotent(repo, project_id):
         rid=seeded["child"].id,
     )
     assert [row["run_id"] for row in rows] == ["run-A", "run-B"]
+
+
+async def test_delete_project_cascades(repo, project_id):
+    seeded = await seed_project(repo, project_id)
+    await repo.write_verdict(
+        seeded["asset"].id,
+        seeded["child"].id,
+        "run-A",
+        CheckResult(verdict=VerdictType.VIOLATES, measured=30.0, required=">= 32 in", reason="r"),
+    )
+
+    paths = await repo.delete_project(project_id)
+    assert sorted(paths) == ["/tmp/ada.pdf", "/tmp/plan.pdf"]
+
+    orphans = await repo._run(
+        "MATCH (n {project_id: $pid}) RETURN count(n) AS c", pid=project_id
+    )
+    assert orphans[0]["c"] == 0
+    remaining = await repo._run(
+        "MATCH (p:Project {id: $pid}) RETURN count(p) AS c", pid=project_id
+    )
+    assert remaining[0]["c"] == 0
+    assert await repo.delete_project(project_id) is None
+
+
+async def test_delete_codebook_document_removes_clauses_and_verdict_edges(repo, project_id):
+    seeded = await seed_project(repo, project_id)
+    await repo.write_verdict(
+        seeded["asset"].id,
+        seeded["child"].id,
+        "run-A",
+        CheckResult(verdict=VerdictType.VIOLATES, measured=30.0, required=">= 32 in", reason="r"),
+    )
+
+    info = await repo.delete_document(seeded["doc_code"])
+    assert info == {"path": "/tmp/ada.pdf", "kind": "codebook", "project_id": project_id}
+
+    regulations = await repo._run(
+        "MATCH (r:Regulation {project_id: $pid}) RETURN count(r) AS c", pid=project_id
+    )
+    assert regulations[0]["c"] == 0
+    # The floorplan asset survives, but its verdict edges are gone with the clauses.
+    verdicts = await repo._run(
+        "MATCH (a:PhysicalAsset {id: $aid}) OPTIONAL MATCH (a)-[v]->() "
+        "RETURN count(a) AS assets, count(v) AS verdicts",
+        aid=seeded["asset"].id,
+    )
+    assert verdicts[0] == {"assets": 1, "verdicts": 0}
+    payload = await repo.results_payload(project_id)
+    assert payload["clauses"] == []
+    assert payload["sheets"][0]["assets"][0]["verdicts"] == []
+    assert await repo.delete_document(seeded["doc_code"]) is None
 
 
 async def test_results_payload_shape(repo, project_id):
