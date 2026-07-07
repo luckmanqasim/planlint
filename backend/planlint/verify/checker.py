@@ -8,6 +8,7 @@ from planlint.models import (
     CheckResult,
     Constraint,
     Operator,
+    Parameter,
     PhysicalAsset,
     VerdictType,
 )
@@ -27,6 +28,29 @@ _TO_INCHES: dict[str, float] = {
 def to_inches(value: float, unit: str) -> float | None:
     """Convert a value in `unit` to inches; None for unknown units."""
     factor = _TO_INCHES.get(unit.strip().lower())
+    if factor is None:
+        return None
+    return value * factor
+
+
+_TO_SQUARE_METRES: dict[str, float] = {
+    "m²": 1.0,
+    "m2": 1.0,
+    "sqm": 1.0,
+    "sq m": 1.0,
+    "square metres": 1.0,
+    "square meters": 1.0,
+    "ft²": 0.09290304,
+    "ft2": 0.09290304,
+    "sqft": 0.09290304,
+    "sq ft": 0.09290304,
+    "square feet": 0.09290304,
+}
+
+
+def to_square_metres(value: float, unit: str) -> float | None:
+    """Convert an area in `unit` to square metres; None for unknown units."""
+    factor = _TO_SQUARE_METRES.get(unit.strip().lower())
     if factor is None:
         return None
     return value * factor
@@ -64,6 +88,9 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
 
     if constraint.unit is None:
         return _review("Constraint has no unit")
+
+    if constraint.parameter == Parameter.AREA:
+        return _check_area(asset, constraint)
 
     required_in = to_inches(constraint.value, constraint.unit)
     if required_in is None:
@@ -138,3 +165,53 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
         )
 
     return _review(f"Unsupported operator '{constraint.operator.value}'")
+
+
+def _check_area(asset: PhysicalAsset, constraint: Constraint) -> CheckResult:
+    """Floor-area comparison — measured values are stored in square metres."""
+    assert constraint.value is not None and constraint.unit is not None
+    required = to_square_metres(constraint.value, constraint.unit)
+    if required is None:
+        return _review(f"Unknown area unit '{constraint.unit}'")
+    measured = asset.measurements.get(Parameter.AREA)
+    if measured is None:
+        return _review("Asset has no 'area_m2' measurement")
+
+    if constraint.operator == Operator.MIN:
+        required_str = f">= {required:g} m²"
+        ok = measured >= required
+        reason = (
+            f"floor area is {measured:g} m²; code requires {required_str}"
+            if ok
+            else f"floor area is {measured:g} m², code requires {required:g} m² minimum"
+        )
+    elif constraint.operator == Operator.MAX:
+        required_str = f"<= {required:g} m²"
+        ok = measured <= required
+        reason = (
+            f"floor area is {measured:g} m²; code requires {required_str}"
+            if ok
+            else f"floor area is {measured:g} m², code allows {required:g} m² maximum"
+        )
+    elif constraint.operator == Operator.RANGE:
+        if constraint.value_high is None:
+            return _review("Range constraint is missing its upper bound")
+        high = to_square_metres(constraint.value_high, constraint.unit)
+        if high is None:
+            return _review(f"Unknown area unit '{constraint.unit}'")
+        required_str = f"{required:g}..{high:g} m²"
+        ok = required <= measured <= high
+        reason = (
+            f"floor area is {measured:g} m², within {required_str}"
+            if ok
+            else f"floor area is {measured:g} m², code requires between {required:g} and {high:g} m²"
+        )
+    else:
+        return _review(f"Unsupported operator '{constraint.operator.value}'")
+
+    return CheckResult(
+        verdict=VerdictType.COMPLIES_WITH if ok else VerdictType.VIOLATES,
+        measured=measured,
+        required=required_str,
+        reason=reason,
+    )

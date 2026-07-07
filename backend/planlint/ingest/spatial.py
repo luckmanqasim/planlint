@@ -18,7 +18,7 @@ import pymupdf
 from planlint.config import settings
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.vlm import RENDER_ZOOM, VlmPage, detect_page, fake_detect_from_labels
-from planlint.models import PhysicalAsset, RunEvent
+from planlint.models import Parameter, PhysicalAsset, RunEvent
 
 EmitFn = Callable[[RunEvent], Awaitable[None]]
 
@@ -99,10 +99,14 @@ async def ingest_floorplan(
                     measurements, from_label = measured
                     if not from_label:
                         confidence = min(confidence, 0.6)  # geometry heuristic
+                if entity.floor_area_m2 is not None and entity.floor_area_m2 > 0:
+                    # Printed floor area read off the drawing (m² by plan
+                    # convention) — a real dimension, not a geometry guess.
+                    measurements[Parameter.AREA] = entity.floor_area_m2
                 assets.append(
                     PhysicalAsset(
                         type=entity.entity_type,
-                        label=entity.label,
+                        label=entity.name,
                         bbox=bbox,
                         confidence=confidence,
                         source=source,

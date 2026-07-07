@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pymupdf
 
-from planlint.ingest.clause_tree import TextBlock, build_clause_tree
+from planlint.ingest.clause_tree import (
+    StructuredItem,
+    TextBlock,
+    build_clause_tree,
+    build_clause_tree_from_structure,
+)
 from planlint.models import RegulationClause
 
 
@@ -33,27 +38,46 @@ def _simple_blocks(pdf_path: Path) -> list[TextBlock]:
     return blocks
 
 
-def _docling_blocks(pdf_path: Path) -> list[TextBlock]:
+def _docling_items(pdf_path: Path) -> list[StructuredItem]:
+    """Layout-aware parse: Docling decides reading order, what is a section
+    header, what is a table, and what is page furniture (headers/footers are
+    excluded from the body it iterates). We keep that structure instead of
+    flattening back to text and re-guessing with regexes."""
     from docling.document_converter import DocumentConverter  # lazy: heavy import
+    from docling_core.types.doc import DocItemLabel, TableItem
 
-    result = DocumentConverter().convert(str(pdf_path))
-    document = result.document
-    blocks: list[TextBlock] = []
-    for item, _level in document.iterate_items():
-        text = getattr(item, "text", "") or ""
-        if not text.strip():
-            continue
-        page = 0
-        bbox = None
+    document = DocumentConverter().convert(str(pdf_path)).document
+
+    def provenance(item) -> tuple[int, tuple | None]:
         prov = getattr(item, "prov", None)
-        if prov:
-            page = max(prov[0].page_no - 1, 0)  # docling pages are 1-based
-            b = prov[0].bbox
-            page_height = document.pages[prov[0].page_no].size.height
-            # Docling uses bottom-left origin; flip to top-left PDF points.
-            bbox = (b.l, page_height - b.t, b.r, page_height - b.b)
-        blocks.append(TextBlock(text=text.strip(), page=page, bbox=bbox))
-    return blocks
+        if not prov:
+            return 0, None
+        page_no = prov[0].page_no
+        b = prov[0].bbox
+        page_height = document.pages[page_no].size.height
+        # Docling uses bottom-left origin; flip to top-left PDF points.
+        return max(page_no - 1, 0), (b.l, page_height - b.t, b.r, page_height - b.b)
+
+    items: list[StructuredItem] = []
+    for item, _level in document.iterate_items():
+        label = getattr(item, "label", None)
+        if label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
+            continue  # page numbers ('10-95') and running titles are not content
+        page, bbox = provenance(item)
+        if isinstance(item, TableItem):
+            try:
+                table_text = item.export_to_markdown(doc=document)
+            except TypeError:  # older docling-core signature
+                table_text = item.export_to_markdown()
+            if table_text.strip():
+                items.append(StructuredItem("table", table_text.strip(), page, bbox))
+            continue
+        text = (getattr(item, "text", "") or "").strip()
+        if not text:
+            continue
+        kind = "header" if label in (DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE) else "text"
+        items.append(StructuredItem(kind, text, page, bbox))
+    return items
 
 
 def _docling_available() -> bool:
@@ -68,7 +92,12 @@ def _docling_available() -> bool:
 def parse_codebook(pdf_path: Path, mode: str = "auto") -> list[RegulationClause]:
     """Parse a codebook PDF into a clause tree. mode: auto | docling | simple."""
     if mode == "docling" or (mode == "auto" and _docling_available()):
-        blocks = _docling_blocks(pdf_path)
-    else:
-        blocks = _simple_blocks(pdf_path)
-    return build_clause_tree(blocks)
+        items = _docling_items(pdf_path)
+        clauses = build_clause_tree_from_structure(items)
+        if clauses:
+            return clauses
+        # The layout model found no section headers (unusual scan/layout):
+        # fall back to the regex builder over the same reading-ordered text.
+        blocks = [TextBlock(text=i.text, page=i.page, bbox=i.bbox) for i in items]
+        return build_clause_tree(blocks)
+    return build_clause_tree(_simple_blocks(pdf_path))

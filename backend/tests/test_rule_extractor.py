@@ -165,3 +165,65 @@ async def test_persistent_bad_output_raises():
 
     with pytest.raises(Exception):
         await extract_constraints(CLAUSE, ANCESTORS, FunctionModel(model_fn))
+
+
+AREA_ARGS = {
+    "constraints": [
+        {
+            "applies_to": "room",
+            "parameter": "area_m2",
+            "operator": "min",
+            "value": 9.0,
+            "value_high": None,
+            "unit": "m2",
+            "extraction_confidence": 1.0,
+            "summary": "Habitable rooms must have at least 9 square metres of floor area.",
+        }
+    ]
+}
+
+
+async def test_area_constraint_with_area_unit_accepted():
+    def model_fn(messages, info):
+        return structured(info, AREA_ARGS)
+
+    constraints = await extract_constraints(CLAUSE, ANCESTORS, FunctionModel(model_fn))
+    assert len(constraints) == 1
+    assert constraints[0].parameter == Parameter.AREA
+    assert constraints[0].unit == "m2"
+
+
+async def test_length_parameter_with_area_unit_retries_then_corrects():
+    """Unit dimension must match the parameter: clear_width in m2 is bounced."""
+    bad = {
+        "constraints": [
+            {
+                "applies_to": "door",
+                "parameter": "clear_width",
+                "operator": "min",
+                "value": 32.0,
+                "value_high": None,
+                "unit": "m2",
+                "extraction_confidence": 1.0,
+                "summary": "bad unit dimension",
+            }
+        ]
+    }
+    calls = {"n": 0}
+
+    def model_fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return structured(info, bad)
+        retry_parts = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        ]
+        assert retry_parts, "expected a RetryPromptPart after ModelRetry"
+        return structured(info, GOOD_ARGS)
+
+    constraints = await extract_constraints(CLAUSE, ANCESTORS, FunctionModel(model_fn))
+    assert calls["n"] == 2
+    assert constraints[0].parameter == Parameter.CLEAR_WIDTH

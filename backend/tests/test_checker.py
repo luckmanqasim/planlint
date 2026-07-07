@@ -223,3 +223,60 @@ def test_missing_value_needs_review():
 def test_result_type():
     result = check(make_asset(), make_constraint())
     assert isinstance(result, CheckResult)
+
+
+# --------------------------------------------------------------------- area
+
+
+def area_asset(area: float | None = 12.02) -> PhysicalAsset:
+    measurements = {} if area is None else {Parameter.AREA: area}
+    return make_asset(type_=AssetType.ROOM, measurements=measurements)
+
+
+def area_constraint(operator=Operator.MIN, value=9.0, value_high=None, unit="m²") -> Constraint:
+    return make_constraint(
+        operator=operator,
+        value=value,
+        value_high=value_high,
+        unit=unit,
+        applies_to=AssetType.ROOM,
+        parameter=Parameter.AREA,
+    )
+
+
+def test_area_min_complies():
+    result = check(area_asset(12.02), area_constraint(value=9.0))
+    assert result.verdict == VerdictType.COMPLIES_WITH
+    assert result.required == ">= 9 m²"
+
+
+def test_area_min_violates():
+    result = check(area_asset(7.5), area_constraint(value=9.0))
+    assert result.verdict == VerdictType.VIOLATES
+    assert "7.5 m²" in result.reason and "9 m² minimum" in result.reason
+
+
+def test_area_max_and_range():
+    assert check(area_asset(12.0), area_constraint(Operator.MAX, 15.0)).verdict == (
+        VerdictType.COMPLIES_WITH
+    )
+    assert check(
+        area_asset(12.0), area_constraint(Operator.RANGE, 9.0, value_high=11.0)
+    ).verdict == VerdictType.VIOLATES
+
+
+def test_area_square_feet_converts():
+    # 100 sq ft = 9.29 m²; a 12.02 m² room complies.
+    result = check(area_asset(12.02), area_constraint(value=100.0, unit="sqft"))
+    assert result.verdict == VerdictType.COMPLIES_WITH
+
+
+def test_area_unknown_unit_needs_review():
+    result = check(area_asset(), area_constraint(unit="acres"))
+    assert result.verdict == VerdictType.NEEDS_REVIEW
+
+
+def test_area_without_measurement_needs_review():
+    result = check(area_asset(area=None), area_constraint())
+    assert result.verdict == VerdictType.NEEDS_REVIEW
+    assert "area_m2" in result.reason

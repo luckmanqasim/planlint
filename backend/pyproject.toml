@@ -44,6 +44,7 @@ testpaths = ["tests"]
 addopts = "--inline-snapshot=disable"
 markers = [
     "integration: requires a live Neo4j instance (docker compose up neo4j)",
+    "docling: exercises the real Docling layout parser (slow; skipped when docling is missing)",
 ]
 
 [tool.inline-snapshot]

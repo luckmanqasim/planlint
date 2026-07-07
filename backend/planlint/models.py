@@ -27,6 +27,7 @@ class AssetType(str, Enum):
 
 
 class Parameter(str, Enum):
+    AREA = "area_m2"  # floor area; canonical unit is square metres
     CLEAR_WIDTH = "clear_width"
     OPENING_HEIGHT = "opening_height"
     THRESHOLD_HEIGHT = "threshold_height"

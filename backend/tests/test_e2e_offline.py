@@ -17,6 +17,9 @@ SAMPLES = Path(__file__).resolve().parents[2] / "samples"
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch):
     monkeypatch.setattr(settings, "planlint_fake_llm", True)
+    # This test pins the lightweight parser: its expectations describe the
+    # regex path, and it must not depend on whether docling is installed.
+    monkeypatch.setattr(settings, "planlint_semantic_parser", "simple")
 
 
 async def test_sample_project_end_to_end(fake_repo, fake_embedder):
