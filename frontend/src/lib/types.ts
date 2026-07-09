@@ -21,7 +21,7 @@ export interface Asset {
   label: string;
   bbox: [number, number, number, number];
   confidence: number;
-  source: "vector-snapped" | "vlm-only";
+  source: "vector-snapped" | "raster-snapped" | "vlm-only";
   measurements: Record<string, number>;
   verdicts: VerdictEdge[];
 }
