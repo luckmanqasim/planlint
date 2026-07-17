@@ -16,6 +16,8 @@ def _new_id(prefix: str) -> str:
 
 
 class AssetType(str, Enum):
+    """Kind of physical object detected on a drawing."""
+
     DOOR = "door"
     FIRE_EXIT = "fire_exit"
     RAMP = "ramp"
@@ -27,6 +29,8 @@ class AssetType(str, Enum):
 
 
 class Parameter(str, Enum):
+    """A measurable quantity a constraint can govern (asset measurement key)."""
+
     AREA = "area_m2"  # floor area; canonical unit is square metres
     CLEAR_WIDTH = "clear_width"
     OPENING_HEIGHT = "opening_height"
@@ -39,6 +43,8 @@ class Parameter(str, Enum):
 
 
 class Operator(str, Enum):
+    """How a constraint's value bounds the measurement (min/max/range/…)."""
+
     MIN = "min"
     MAX = "max"
     RANGE = "range"
@@ -47,6 +53,8 @@ class Operator(str, Enum):
 
 
 class VerdictType(str, Enum):
+    """The checker's ruling for one asset against one regulation."""
+
     COMPLIES_WITH = "COMPLIES_WITH"
     VIOLATES = "VIOLATES"
     NEEDS_REVIEW = "NEEDS_REVIEW"
@@ -57,6 +65,8 @@ BBox = tuple[float, float, float, float]
 
 
 class PhysicalAsset(BaseModel):
+    """A physical object found on a sheet, with its measured parameters."""
+
     id: str = Field(default_factory=lambda: _new_id("asset"))
     type: AssetType
     label: str = ""
@@ -67,6 +77,8 @@ class PhysicalAsset(BaseModel):
 
 
 class RegulationClause(BaseModel):
+    """One clause of a codebook, positioned in its section hierarchy."""
+
     id: str = Field(default_factory=lambda: _new_id("reg"))
     clause_id: str  # e.g. "404.2.3"
     title: str = ""
@@ -78,6 +90,8 @@ class RegulationClause(BaseModel):
 
 
 class Constraint(BaseModel):
+    """A machine-checkable rule extracted from a clause's prose."""
+
     id: str = Field(default_factory=lambda: _new_id("con"))
     regulation_id: str  # RegulationClause.id it was extracted from
     applies_to: AssetType
@@ -91,6 +105,8 @@ class Constraint(BaseModel):
 
 
 class CheckResult(BaseModel):
+    """The checker's output: a verdict plus the numbers that justify it."""
+
     verdict: VerdictType
     measured: float | None = None  # inches (canonical)
     required: str | None = None  # human string, e.g. ">= 32 in"
@@ -98,6 +114,8 @@ class CheckResult(BaseModel):
 
 
 class RunEvent(BaseModel):
+    """A single progress update streamed to SSE subscribers during a run."""
+
     stage: str  # "ingest:semantic" | "ingest:spatial" | "verify" | "done" | "error"
     message: str
     progress: float | None = None  # 0..1 within the stage
@@ -106,6 +124,8 @@ class RunEvent(BaseModel):
 
 
 class RunSummary(BaseModel):
+    """Final tally of a completed run: verdict counts and any errors."""
+
     run_id: str
     counts: dict[str, int] = Field(default_factory=dict)  # VerdictType value -> count
     errors: list[str] = Field(default_factory=list)

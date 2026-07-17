@@ -1,5 +1,9 @@
 "use client";
 
+// Project workspace: uploads, verification runs, and the two-pane review
+// surface (plan canvas ↔ clause pane). Owns the sheet/asset selection model
+// that keeps the two panes in sync in both directions.
+
 import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 

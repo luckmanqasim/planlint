@@ -14,6 +14,9 @@ from planlint.config import settings
 
 
 def create_app(repo=None, embedder=None) -> FastAPI:
+    """Build the FastAPI app. Pass `repo`/`embedder` to inject fakes in tests;
+    leave them None and the lifespan wires the real Neo4j driver and embedder."""
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         driver = None

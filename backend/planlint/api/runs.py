@@ -20,6 +20,9 @@ DONE_TTL_SECONDS = 3600
 
 @dataclass
 class Run:
+    """In-memory state of one verification run: its event history, live SSE
+    subscribers, and the background task producing them."""
+
     run_id: str
     project_id: str
     created_at: float = field(default_factory=time.monotonic)
@@ -30,6 +33,8 @@ class Run:
 
 
 class RunManager:
+    """Registry of active and recently-finished runs (see module docstring)."""
+
     def __init__(self):
         self._runs: dict[str, Run] = {}
 

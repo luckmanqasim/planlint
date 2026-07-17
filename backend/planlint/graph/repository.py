@@ -22,6 +22,9 @@ from planlint.models import (
 
 
 class GraphRepository:
+    """The sole gateway to Neo4j — one method per graph operation, all
+    parameterized. Swappable with `FakeRepository` in tests via `create_app`."""
+
     def __init__(self, driver: AsyncDriver, database: str = "neo4j"):
         self._driver = driver
         self._db = database

@@ -1,3 +1,7 @@
+// The single HTTP client for the backend. Every network call lives here;
+// components never call fetch directly. Errors surface as thrown Error(status +
+// body); the SSE helper returns an unsubscribe and settles exactly once.
+
 import type { ProjectSummary, Results, RunEvent } from "./types";
 
 export const API_URL =

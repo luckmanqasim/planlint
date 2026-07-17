@@ -1,5 +1,9 @@
 "use client";
 
+// Home page: create/load projects and manage the project list, including
+// single- and multi-select deletion. Deletes are optimistic and reconciled
+// with a refresh() on failure.
+
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";

@@ -1,5 +1,9 @@
 "use client";
 
+// Left-hand pane: renders a sheet's PDF page and overlays asset boxes coloured
+// by verdict. Render tasks are cancelled and PDF proxies cached per document,
+// so sheet switches and resizes never leak work or corrupt the canvas.
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 

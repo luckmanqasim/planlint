@@ -1,5 +1,9 @@
 "use client";
 
+// Right-hand pane: the codebook clause tree, annotated with verdicts. Clauses
+// group by document when there's more than one codebook; clicking a verdict-
+// annotated clause selects its asset (reverse sync with the plan canvas).
+
 import { useEffect, useMemo, useRef } from "react";
 
 import { formatInches, verdictGlyph, verdictLabel, VERDICT_SEVERITY } from "@/lib/verdicts";

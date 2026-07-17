@@ -47,11 +47,13 @@ class ScaleUpdate(BaseModel):
 
 @router.get("/projects")
 async def list_projects(request: Request):
+    """List all projects with their document counts."""
     return await _repo(request).list_projects()
 
 
 @router.post("/projects", status_code=201)
 async def create_project(body: CreateProject, request: Request):
+    """Create an empty project and return its id."""
     project_id = f"proj-{uuid.uuid4().hex[:10]}"
     await _repo(request).create_project(project_id, body.name)
     return {"id": project_id, "name": body.name}
@@ -79,6 +81,7 @@ async def create_sample_project(request: Request):
 
 @router.delete("/projects/{project_id}", status_code=204)
 async def delete_project(project_id: str, request: Request):
+    """Delete a project: cascade the graph, evict its runs, remove its files."""
     _validate_project_id(project_id)
     paths = await _repo(request).delete_project(project_id)
     if paths is None:
@@ -92,6 +95,7 @@ async def delete_project(project_id: str, request: Request):
 
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(document_id: str, request: Request):
+    """Delete one document (cascading its graph descendants) and its file."""
     info = await _repo(request).delete_document(document_id)
     if info is None:
         raise HTTPException(404, "document not found")
@@ -101,6 +105,7 @@ async def delete_document(document_id: str, request: Request):
 
 @router.post("/projects/{project_id}/documents", status_code=201)
 async def upload_document(project_id: str, kind: str, file: UploadFile, request: Request):
+    """Store an uploaded floorplan/codebook PDF and register it in the graph."""
     _validate_project_id(project_id)
     if kind not in ("floorplan", "codebook"):
         raise HTTPException(422, "kind must be floorplan or codebook")
@@ -129,6 +134,7 @@ async def upload_document(project_id: str, kind: str, file: UploadFile, request:
 
 @router.post("/projects/{project_id}/verify", status_code=202)
 async def start_verification(project_id: str, request: Request):
+    """Kick off a verification run in the background; returns its run_id."""
     _validate_project_id(project_id)
     if await _repo(request).get_project(project_id) is None:
         raise HTTPException(404, "unknown project")
@@ -161,6 +167,7 @@ async def start_verification(project_id: str, request: Request):
 
 @router.get("/runs/{run_id}/events")
 async def run_events(run_id: str, request: Request):
+    """Stream a run's progress events as Server-Sent Events (history + live)."""
     manager = request.app.state.runs
     if manager.get(run_id) is None:
         raise HTTPException(404, "unknown run")
@@ -174,6 +181,7 @@ async def run_events(run_id: str, request: Request):
 
 @router.get("/projects/{project_id}/results")
 async def project_results(project_id: str, request: Request, run_id: str | None = None):
+    """Return sheets, assets, clauses, and verdict edges for a run (latest by default)."""
     payload = await _repo(request).results_payload(project_id, run_id)
     if not payload:
         raise HTTPException(404, "unknown project")
@@ -182,6 +190,7 @@ async def project_results(project_id: str, request: Request, run_id: str | None 
 
 @router.get("/documents/{document_id}/pdf")
 async def document_pdf(document_id: str, request: Request):
+    """Serve a document's original PDF (for the viewer)."""
     document = await _repo(request).get_document(document_id)
     if document is None or not Path(document["path"]).exists():
         raise HTTPException(404, "document not found")
@@ -190,6 +199,7 @@ async def document_pdf(document_id: str, request: Request):
 
 @router.patch("/documents/{document_id}/scale")
 async def set_document_scale(document_id: str, body: ScaleUpdate, request: Request):
+    """Set a manual drawing scale to override failed auto-detection."""
     if parse_scale(body.scale_text) is None:
         raise HTTPException(422, "unparseable scale — use forms like '1/4\" = 1'-0\"' or '1:50'")
     repo = _repo(request)
