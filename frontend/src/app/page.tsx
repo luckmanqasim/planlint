@@ -27,6 +27,7 @@ export default function HomePage() {
   const [busy, setBusy] = useState<"create" | "sample" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const { toasts, push: pushToast } = useToasts();
 
   const refresh = useCallback(() => {
@@ -35,6 +36,10 @@ export default function HomePage() {
       .then((data) => {
         setProjects(data);
         setError(null);
+        setSelected((prev) => {
+          const live = new Set(data.map((p) => p.id));
+          return new Set([...prev].filter((id) => live.has(id)));
+        });
       })
       .catch((e) => setError(String(e)));
   }, []);
@@ -64,12 +69,55 @@ export default function HomePage() {
     }
   }
 
+  const allSelected =
+    projects.length > 0 && selected.size === projects.length;
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelected(allSelected ? new Set() : new Set(projects.map((p) => p.id)));
+  }
+
+  function requestBulkDelete() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setConfirm({
+      title: `Delete ${ids.length} project${ids.length === 1 ? "" : "s"}?`,
+      body: "All documents, verification results, and uploaded PDFs will be permanently removed.",
+      confirmLabel: `Delete ${ids.length}`,
+      onConfirm: async () => {
+        const doomed = new Set(ids);
+        setProjects((prev) => prev.filter((p) => !doomed.has(p.id)));
+        setSelected(new Set());
+        const outcomes = await Promise.allSettled(
+          ids.map((id) => api.deleteProject(id)),
+        );
+        const failed = outcomes.filter((o) => o.status === "rejected").length;
+        if (failed > 0) {
+          setError(
+            `${failed} project${failed === 1 ? "" : "s"} could not be deleted`,
+          );
+          refresh(); // restore whatever survived
+        } else {
+          pushToast(`Deleted ${ids.length} project${ids.length === 1 ? "" : "s"}`);
+        }
+      },
+    });
+  }
+
   function requestDelete(project: ProjectSummary) {
     setConfirm({
       title: `Delete “${project.name}”?`,
       body: "All documents, verification results, and uploaded PDFs will be permanently removed.",
       onConfirm: async () => {
-        setProjects((prev) => prev.filter((p) => p.id !== project.id)); // optimistic
+        setProjects((prev) => prev.filter((p) => p.id !== project.id)); 
         try {
           await api.deleteProject(project.id);
           pushToast(`Deleted ${project.name}`);
@@ -142,7 +190,30 @@ export default function HomePage() {
         </p>
       </div>
 
-      <h2 className="mb-3 font-medium">Projects</h2>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="font-medium">Projects</h2>
+        {projects.length > 0 && (
+          <div className="flex items-center gap-2 text-sm">
+            {selected.size > 0 && (
+              <>
+                <span className="text-ink-dim">{selected.size} selected</span>
+                <button
+                  onClick={requestBulkDelete}
+                  className="rounded-lg bg-fail/90 px-3 py-1.5 font-medium text-surface-0 hover:bg-fail focus:outline-2 focus:outline-accent"
+                >
+                  Delete selected
+                </button>
+              </>
+            )}
+            <button
+              onClick={toggleSelectAll}
+              className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 hover:bg-edge focus:outline-2 focus:outline-accent"
+            >
+              {allSelected ? "Clear" : "Select all"}
+            </button>
+          </div>
+        )}
+      </div>
       {projects.length === 0 ? (
         <div className="rounded-xl border border-dashed border-edge p-10 text-center text-ink-dim">
           No projects yet — create one or load the sample.
@@ -152,9 +223,23 @@ export default function HomePage() {
           {projects.map((project) => (
             <div
               key={project.id}
-              className="relative rounded-xl border border-edge bg-surface-1 transition-colors hover:border-accent/60"
+              className={`relative rounded-xl border bg-surface-1 transition-colors ${
+                selected.has(project.id)
+                  ? "border-accent"
+                  : "border-edge hover:border-accent/60"
+              }`}
             >
-              <Link href={`/project/${project.id}`} className="block p-4 pr-12">
+              <input
+                type="checkbox"
+                aria-label={`Select project ${project.name}`}
+                checked={selected.has(project.id)}
+                onChange={() => toggleSelect(project.id)}
+                className="absolute top-3.5 left-3.5 size-4 accent-accent focus:outline-2 focus:outline-accent"
+              />
+              <Link
+                href={`/project/${project.id}`}
+                className="block py-4 pr-12 pl-11"
+              >
                 <span className="block truncate font-medium">{project.name}</span>
                 <span className="mt-1 block text-xs text-ink-dim">
                   {project.document_count} document
