@@ -158,3 +158,59 @@ def test_docling_parses_ada_sample_end_to_end():
     by_id = {c.clause_id: c for c in clauses}
     assert "32 inches" in by_id["404.2.3"].text
     assert len(ids) == len(clauses)  # no duplicates
+
+
+@pytest.mark.docling
+def test_docling_chunked_parse_matches_unchunked():
+    """Chunked conversion (the memory-bounding path for large codebooks) must
+    yield the same clause tree as a single-call parse — a chunk boundary can
+    never change what gets ingested."""
+    pytest.importorskip("docling")
+    from planlint.ingest.clause_tree import build_clause_tree_from_structure
+    from planlint.ingest.semantic import _docling_items
+
+    pdf = SAMPLES / "ada_excerpt.pdf"
+    if not pdf.exists():
+        pytest.skip("sample PDFs not generated")
+    # The sample is 2 pages: chunk_pages=1 forces a chunk boundary mid-document.
+    chunked = build_clause_tree_from_structure(_docling_items(pdf, chunk_pages=1))
+    whole = build_clause_tree_from_structure(_docling_items(pdf, chunk_pages=10_000))
+    assert [(c.clause_id, c.page, c.text) for c in chunked] == [
+        (c.clause_id, c.page, c.text) for c in whole
+    ]
+    # Worker windows concatenate the same way (per-worker page_span slices).
+    split = _docling_items(pdf, page_span=(1, 1)) + _docling_items(pdf, page_span=(2, 2))
+    windowed = build_clause_tree_from_structure(split)
+    assert [(c.clause_id, c.page, c.text) for c in windowed] == [
+        (c.clause_id, c.page, c.text) for c in whole
+    ]
+
+
+def test_isolated_simple_parse_stays_in_process():
+    """The lightweight simple parser must not pay the subprocess tax — and its
+    output must match a direct parse."""
+    from planlint.ingest.semantic import parse_codebook, parse_codebook_isolated
+
+    pdf = SAMPLES / "ada_excerpt.pdf"
+    if not pdf.exists():
+        pytest.skip("sample PDFs not generated")
+    direct = parse_codebook(pdf, "simple")
+    isolated = parse_codebook_isolated(pdf, "simple")
+    assert [(c.clause_id, c.text) for c in isolated] == [
+        (c.clause_id, c.text) for c in direct
+    ]
+
+
+@pytest.mark.docling
+def test_isolated_docling_parse_round_trips_through_subprocess():
+    """The Docling path runs in a spawn subprocess (memory isolation): clauses
+    must pickle back intact across the process boundary."""
+    pytest.importorskip("docling")
+    from planlint.ingest.semantic import parse_codebook_isolated
+
+    pdf = SAMPLES / "ada_excerpt.pdf"
+    if not pdf.exists():
+        pytest.skip("sample PDFs not generated")
+    clauses = parse_codebook_isolated(pdf, "docling")
+    ids = {c.clause_id for c in clauses}
+    assert {"404.2.3", "404.2.5", "404.2.9", "403.5.1"} <= ids

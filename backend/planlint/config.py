@@ -43,5 +43,12 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 8
     extraction_confidence_floor: float = 0.5
 
+    # Pages per Docling conversion chunk. Docling's parse backend transiently
+    # commits ~2 GB per page IN FLIGHT (all pages of one convert are held until
+    # it completes), so this directly sets peak memory: 2 pages ≈ 6.5 GB peak,
+    # 16 pages ≈ 30 GB — enough to exhaust commit on a loaded machine. Raise it
+    # for faster parses only on machines with real headroom.
+    planlint_docling_page_chunk: int = 2
+
 
 settings = Settings()

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from planlint.config import settings
-from planlint.ingest.semantic import parse_codebook
+from planlint.ingest.semantic import parse_codebook_isolated
 from planlint.ingest.spatial import ingest_floorplan
 from planlint.models import (
     CheckResult,
@@ -58,8 +58,10 @@ async def ingest_pending_documents(
             await emit(RunEvent(stage="ingest:semantic", message=f"Parsing {document['filename']}"))
             # PDF parsing and embedding are sync CPU-bound: run them in
             # threads so the SSE stream (and every other request) stays live.
+            # (The Docling path additionally runs in a subprocess so its ~2 GB
+            # working set returns to the OS instead of living in this process.)
             clauses = await asyncio.to_thread(
-                parse_codebook, path, settings.planlint_semantic_parser
+                parse_codebook_isolated, path, settings.planlint_semantic_parser
             )
             embeddings = await asyncio.to_thread(
                 embedder.embed, [f"{c.hierarchy_path}\n{c.text}" for c in clauses]
