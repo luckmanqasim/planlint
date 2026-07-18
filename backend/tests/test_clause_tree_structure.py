@@ -135,6 +135,75 @@ def test_duplicate_header_ids_merge():
     assert "Amended requirements" in clauses[0].text
 
 
+def test_run_in_numbered_sections_split_out_of_body_text():
+    """Docling emits ADA-style run-in headings ('306.3.1 General. …') as plain
+    text; each numbered section must still become its own clause — the
+    smallest numbered item is the clause."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("306.3 Knee Clearance."),
+            text(
+                "306.3.1 General. Space under an element between 9 inches (230 mm) "
+                "and 27 inches (685 mm) shall be considered knee clearance.\n"
+                "306.3.2 Maximum Depth. Knee clearance shall extend 25 inches "
+                "(635 mm) maximum under an element."
+            ),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["306.3", "306.3.1", "306.3.2"]
+    assert clauses[1].parent_clause_id == "306.3"
+    assert clauses[2].parent_clause_id == "306.3"
+    assert clauses[1].title == "General"
+    assert "knee clearance" in clauses[1].text
+    assert "Maximum Depth" not in clauses[1].text  # bodies don't bleed
+
+
+def test_chapter_header_with_run_in_section_text():
+    """User-reported: 'CHAPTER 3' header swallowed '302.3 Openings. …' body.
+    The section must split into its own clause; figure captions attach to it."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("CHAPTER 3: BUILDING BLOCKS"),
+            text(
+                "302.3 Openings. Openings in floor or ground surfaces shall not "
+                "allow passage of a sphere more than 1/2 inch (13 mm) diameter.\n"
+                "Figure 302.3 Elongated Openings in Floor or Ground Surfaces"
+            ),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["3", "302.3"]
+    assert "Figure 302.3" in clauses[1].text
+    assert "Openings" not in clauses[0].text  # chapter keeps only its own text
+
+
+def test_text_split_guards_reject_measurements_years_and_toc_lines():
+    clauses = build_clause_tree_from_structure(
+        [
+            header("306.3 Knee Clearance."),
+            text("30 inches (760 mm) wide minimum."),
+            text("2010 Standards apply to this facility."),
+            text("305 Clear Floor or Ground Space ......... 112"),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["306.3"]
+    assert "30 inches" in clauses[0].text  # appended, not split
+
+
+def test_contents_header_enters_toc_mode():
+    """The 2010 Standards title their TOC 'CONTENTS' — it must be treated as a
+    table of contents, not become a clause with leaked entries."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("CONTENTS"),
+            text("28 CFR Part 35\n35.151 New construction and alterations"),
+            header("306.3 Knee Clearance."),
+            text("Space under an element shall comply."),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["306.3"]
+    assert "CFR" not in clauses[0].text
+
+
 def test_no_headers_returns_empty_for_fallback():
     clauses = build_clause_tree_from_structure(
         [text("404.2.3 Clear Width. Door openings shall provide 32 inches minimum.")]
@@ -184,6 +253,23 @@ def test_docling_chunked_parse_matches_unchunked():
     assert [(c.clause_id, c.page, c.text) for c in windowed] == [
         (c.clause_id, c.page, c.text) for c in whole
     ]
+
+
+@pytest.mark.docling
+def test_run_in_sections_split_on_real_2010_standards():
+    """The user-reported under-segmentation: on the real 2010 ADA Standards,
+    302.3 must not vanish into CHAPTER 3, and 306.3 must not swallow its
+    306.3.x children — the smallest numbered item is the clause."""
+    pytest.importorskip("docling")
+    from planlint.ingest.semantic import _docling_items
+
+    pdf = SAMPLES / "2010-design-standards.pdf"
+    if not pdf.exists():
+        pytest.skip("2010-design-standards.pdf not present")
+    items = _docling_items(pdf, page_span=(105, 118))
+    ids = {c.clause_id for c in build_clause_tree_from_structure(items)}
+    assert "302.3" in ids
+    assert {"306.3.1", "306.3.2", "306.3.3", "306.3.4", "306.3.5"} <= ids
 
 
 def test_isolated_simple_parse_stays_in_process():

@@ -33,6 +33,31 @@ _ID_ONLY = re.compile(r"^\d+(?:\.\d+)+$")
 _HEADER_LINE = re.compile(r"^\d+(?:\.\d+)*(?:\s*$|\s+[A-Z])")
 
 
+def _clause_start_match(text: str) -> re.Match | None:
+    """Match a segment that starts a numbered clause, with the guards both
+    builders rely on. None when the segment is body text:
+
+    - a dotless "id" longer than 3 digits is a year or a page number, not a
+      section (real sections look like "404", "404.2.3");
+    - section titles start with an uppercase letter ("404.2.3 Clear Width");
+      a number followed by anything else is a measurement ("1.2 metres",
+      "30 inches", "1 space for every 5 Units");
+    - dot leaders on the title line mean a table-of-contents entry, which
+      would otherwise claim the id long before the real body section appears.
+    """
+    match = _CLAUSE_START.match(text)
+    if match is None:
+        return None
+    if "." not in match.group("id") and len(match.group("id")) > 3:
+        return None
+    first = match.group("rest")[0]
+    if not (first.isalpha() and first.isupper()):
+        return None
+    if _TOC_LEADER.search(match.group("rest").splitlines()[0]):
+        return None
+    return match
+
+
 def _split_header_segments(text: str) -> list[str]:
     """Split a block's text at interior header-looking lines. PyMuPDF often
     merges a section heading into the tail of the preceding paragraph's
@@ -92,25 +117,7 @@ def build_clause_tree(text_blocks: list[TextBlock]) -> list[RegulationClause]:
             if pending_id is not None:
                 text = f"{pending_id} {text}"
                 pending_id = None
-            match = _CLAUSE_START.match(text)
-            # A dotless "clause id" longer than 3 digits is a year or a page
-            # number, not a section (real sections look like "404", "404.2.3").
-            if match and "." not in match.group("id") and len(match.group("id")) > 3:
-                match = None
-            # Section titles start with an uppercase letter ("404.2.3 Clear
-            # Width", "1.2 INTERPRETATION"). A number followed by anything else
-            # is a measurement in a standards table ("1.2 metres", "0 metres",
-            # "1 space for every 5 Units"), not a header.
-            if match:
-                first = match.group("rest")[0]
-                if not (first.isalpha() and first.isupper()):
-                    match = None
-            # A TOC entry ("10.3 INTERPRETATION ....... 10-5") would otherwise
-            # claim the section id long before the real body section appears.
-            # The id may sit on its own line, so test the title line (first
-            # line of rest), not the first line of the segment.
-            if match and _TOC_LEADER.search(match.group("rest").splitlines()[0]):
-                match = None
+            match = _clause_start_match(text)
             if match:
                 clause_id = match.group("id")
                 if clause_id in by_id:
@@ -168,7 +175,7 @@ _SECTION_WORD = re.compile(
 # Short zone/appendix codes that headline a section on their own line ("AG",
 # "O", "PMD2") — joined with the next header, which carries the title.
 _CODE_ONLY = re.compile(r"^[A-Z]{1,4}\d{0,2}$")
-_TOC_TITLE = re.compile(r"^table\s+of\s+contents$", re.IGNORECASE)
+_TOC_TITLE = re.compile(r"^(?:table\s+of\s+)?contents$", re.IGNORECASE)
 # "(1) PERMITTED USES" — numbered subsection of the enclosing section. These
 # repeat across zones, so they are scoped under their parent's id.
 _PAREN_NUMBER = re.compile(r"^\((?P<n>\d{1,3})\)\s*(?P<title>.*)$", re.DOTALL)
@@ -199,10 +206,12 @@ def _header_identity(text: str) -> tuple[str, str] | None:
 
 def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[RegulationClause]:
     """Build clauses from a layout-aware parse: every header starts a clause,
-    text and tables attach to the current one. Content before the first
-    header (or under a table-of-contents header) is dropped. Returns [] when
-    the parse contains no headers at all — callers should fall back to the
-    regex builder in that case."""
+    and numbered run-in sections inside body text ("306.3.1 General. …") start
+    clauses too — layout models emit those as plain text, but the smallest
+    numbered item must be the clause. Remaining text and tables attach to the
+    current clause. Content before the first header (or under a
+    table-of-contents header) is dropped. Returns [] when the parse contains
+    no headers at all — callers should fall back to the regex builder."""
     by_id: dict[str, RegulationClause] = {}
     order: list[str] = []
     current: RegulationClause | None = None
@@ -211,6 +220,33 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
     # The id that "(n) …" subsection headers scope under: the most recent
     # clause that was not itself a paren-numbered subsection.
     paren_scope: str | None = None
+
+    def start_clause(
+        clause_id: str, title: str, body: str, page: int, bbox: BBox | None
+    ) -> None:
+        """Create the clause, or merge into it when the id was already seen
+        (amendments, repeated numbering) — the first occurrence survives."""
+        nonlocal current
+        if clause_id in by_id:
+            merged = by_id[clause_id].model_copy(
+                update={"text": by_id[clause_id].text + "\n" + body}
+            )
+            by_id[clause_id] = merged
+            current = merged
+            return
+        parent = _parent_id(clause_id, by_id)
+        clause = RegulationClause(
+            clause_id=clause_id,
+            title=title,
+            hierarchy_path=_breadcrumb(parent, by_id),
+            text=body,
+            page=page,
+            bbox=bbox,
+            parent_clause_id=parent,
+        )
+        by_id[clause_id] = clause
+        order.append(clause_id)
+        current = clause
 
     for item in items:
         text = item.text.strip()
@@ -257,27 +293,7 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                         body = text
                         paren_scope = clause_id
         if is_header:
-            if clause_id in by_id:
-                # Re-encountered id (amendments, repeated numbering): merge.
-                merged = by_id[clause_id].model_copy(
-                    update={"text": by_id[clause_id].text + "\n" + body}
-                )
-                by_id[clause_id] = merged
-                current = merged
-                continue
-            parent = _parent_id(clause_id, by_id)
-            clause = RegulationClause(
-                clause_id=clause_id,
-                title=title,
-                hierarchy_path=_breadcrumb(parent, by_id),
-                text=body,
-                page=page,
-                bbox=bbox,
-                parent_clause_id=parent,
-            )
-            by_id[clause_id] = clause
-            order.append(clause_id)
-            current = clause
+            start_clause(clause_id, title, body, page, bbox)
         else:
             if in_toc or current is None:
                 continue  # preamble / TOC content is dropped
@@ -286,8 +302,36 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                 current = current.model_copy(
                     update={"text": current.text + "\n" + pending_code.text}
                 )
+                by_id[current.clause_id] = current
                 pending_code = None
-            current = current.model_copy(update={"text": current.text + "\n" + text})
-            by_id[current.clause_id] = current
+            # Layout models emit run-in section headings ("306.3.1 General.
+            # Space under…") as body text; split them out so each numbered
+            # section becomes its own clause instead of vanishing into the
+            # enclosing one.
+            for segment in _split_header_segments(text):
+                match = _clause_start_match(segment)
+                # Text-derived splits additionally require a dotted id:
+                # dotless section headings ("303 Urinals") come through as
+                # real layout headers, while body lines that merely start
+                # with a number ("485 Topsail Road", "1 Bull") do not — a
+                # dotless number in body text is data, not a section.
+                if match and "." not in match.group("id"):
+                    match = None
+                if match:
+                    rest = match.group("rest").strip()
+                    title_match = _TITLE.match(rest)
+                    start_clause(
+                        clause_id=match.group("id"),
+                        title=title_match.group("title").strip() if title_match else "",
+                        body=segment,
+                        page=item.page,
+                        bbox=item.bbox,
+                    )
+                    paren_scope = match.group("id")
+                else:
+                    current = current.model_copy(
+                        update={"text": current.text + "\n" + segment}
+                    )
+                    by_id[current.clause_id] = current
 
     return [by_id[cid] for cid in order]
