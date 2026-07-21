@@ -204,6 +204,174 @@ def test_contents_header_enters_toc_mode():
     assert "CFR" not in clauses[0].text
 
 
+def test_section_mark_headers_become_clauses():
+    """CFR-style '§ 35.151 …' headers must yield the section number as id."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 35.151 New construction and alterations."),
+            text("Each facility shall be designed and constructed accessibly."),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["35.151"]
+    assert clauses[0].title == "New construction and alterations."
+    assert "designed and constructed" in clauses[0].text
+
+
+def test_cfr_running_title_does_not_become_clause_28():
+    """'28 CFR part 35.151 …' is a citation-style division title, not a
+    section numbered 28."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 35.150 Program accessibility."),
+            header("28 CFR part 35.151 New Construction and Alterations"),
+            text("Body under the running title."),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["35.150"]
+    assert "Body under" in clauses[0].text
+
+
+def test_cfr_letter_and_digit_paragraph_nesting():
+    """(a)/(b) letter paragraphs nest under the § section; digit paragraphs
+    nest under the active letter — matching CFR citation 35.151(a)(2)."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 35.151 New construction and alterations."),
+            header("(a) Design and construction."),
+            text("Each facility shall be readily accessible."),
+            header("(2) Exception for structural impracticability."),
+            text("Full compliance is not required where structurally impracticable."),
+            header("(b) Alterations."),
+            text("Each altered facility shall comply."),
+        ]
+    )
+    ids = [c.clause_id for c in clauses]
+    assert ids == ["35.151", "35.151.a", "35.151.a.2", "35.151.b"]
+    by_id = {c.clause_id: c for c in clauses}
+    assert by_id["35.151.a"].parent_clause_id == "35.151"
+    assert by_id["35.151.a.2"].parent_clause_id == "35.151.a"
+    assert by_id["35.151.b"].parent_clause_id == "35.151"
+    assert "readily accessible" in by_id["35.151.a"].text
+    assert "structurally impracticable" in by_id["35.151.a.2"].text
+
+
+def test_toc_table_is_dropped_but_content_table_attaches():
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 36.406 Standards for new construction and alterations."),
+            table(
+                "| (a) Accessibility standards......……………..................26 |\n"
+                "| (b) Scope of coverage......…….........................……......27 |\n"
+                "| (c) Places of lodging......…….........................…........28 |"
+            ),
+            table("| Compliance Dates | Applicable Standards |\n| On or after March 15, 2012 | 2010 Standards |"),
+        ]
+    )
+    assert len(clauses) == 1
+    assert "Places of lodging" not in clauses[0].text  # TOC table dropped
+    assert "Applicable Standards" in clauses[0].text  # content table kept
+
+
+def test_toc_title_as_text_item_enters_toc_mode():
+    clauses = build_clause_tree_from_structure(
+        [
+            header("239 Miniature Golf Facilities"),
+            text("TABLE OF CONTENTS"),
+            text("101 Purpose\n102 Dimensions for Adults and Children"),
+            header("240 Play Areas"),
+            text("Play areas shall comply."),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["239", "240"]
+    assert "101 Purpose" not in clauses[0].text
+    assert "shall comply" in clauses[1].text
+
+
+def test_running_head_citation_does_not_merge_or_reset_scope():
+    """'Section 35.151 of 28 CFR Part 35' is a per-page running head. It must
+    not merge into clause 35.151 (splitting content and resetting letter
+    scope at every page break) — it must vanish entirely."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 35.151 New construction and alterations."),
+            header("(a) Design and construction."),
+            text("Each facility shall be accessible."),
+            header("(b) Alterations."),
+            text("Each altered facility shall comply."),
+            header("(c) Accessibility standards and compliance date."),
+            text("If physical construction commences after July 26, 1992, comply."),
+            header("Section 35.151 of 28 CFR Part 35"),  # page-break running head
+            text("If physical construction commences on or after September 15, 2010, comply."),
+            header("(5) Noncomplying new construction and alterations."),
+            text("Newly constructed facilities shall be made accessible."),
+        ]
+    )
+    ids = [c.clause_id for c in clauses]
+    assert ids == ["35.151", "35.151.a", "35.151.b", "35.151.c", "35.151.c.5"]
+    by_id = {c.clause_id: c for c in clauses}
+    assert "September 15, 2010" in by_id["35.151.c"].text
+    assert "September 15, 2010" not in by_id["35.151"].text
+    assert "Section 35.151 of 28 CFR Part 35" not in "".join(c.text for c in clauses)
+
+
+def test_index_pages_are_dropped_until_a_numbered_section():
+    """Back-of-book index: mixed-case entry headers, letter dividers, and
+    entry text must all be dropped; only a real numbered heading resumes."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 36.406 Standards for new construction and alterations."),
+            text("Standards body."),
+            header("Index and List of Figures"),
+            header("Remodeling"),
+            text("Application and Scoping 21, 23, 44"),
+            header("T"),  # alphabetical divider — must not become a zone code
+            header("Team or Player Seating"),
+            text("Application and Scoping 64, 79, 80"),
+            header("§ 36.401 New construction."),
+            text("New construction body."),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["36.406", "36.401"]
+    joined = "\n".join(c.text for c in clauses)
+    assert "Application and Scoping" not in joined
+    assert "New construction body" in clauses[1].text
+
+
+def test_letter_paragraphs_must_advance_alphabetically():
+    """Roman-numeral parens ('(v)') must not masquerade as letter paragraphs:
+    a letter clause forms only when it continues the a, b, c… sequence."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 35.151 New construction and alterations."),
+            header("(a) Design and construction."),
+            text("A body."),
+            header("(b) Alterations."),
+            text("B body."),
+            header("(v) Series of smaller alterations."),  # roman (b)(4)(v)
+            text("Roman body."),
+        ]
+    )
+    ids = [c.clause_id for c in clauses]
+    assert ids == ["35.151", "35.151.a", "35.151.b"]
+    assert "Roman body" in clauses[2].text  # attached to (b), not a clause
+
+
+def test_letter_gap_is_conservative():
+    """A letter that skips the sequence (missing header for (b)) stays in the
+    body — under-splitting beats inventing a wrong clause id."""
+    clauses = build_clause_tree_from_structure(
+        [
+            header("§ 36.402 Alterations."),
+            header("(a) General."),
+            text("A body."),
+            header("(c) To the maximum extent feasible."),
+            text("C body."),
+        ]
+    )
+    assert [c.clause_id for c in clauses] == ["36.402", "36.402.a"]
+    assert "C body" in clauses[1].text
+
+
 def test_no_headers_returns_empty_for_fallback():
     clauses = build_clause_tree_from_structure(
         [text("404.2.3 Clear Width. Door openings shall provide 32 inches minimum.")]
@@ -270,6 +438,74 @@ def test_run_in_sections_split_on_real_2010_standards():
     ids = {c.clause_id for c in build_clause_tree_from_structure(items)}
     assert "302.3" in ids
     assert {"306.3.1", "306.3.2", "306.3.3", "306.3.4", "306.3.5"} <= ids
+
+
+@pytest.mark.docling
+def test_cfr_sections_and_furniture_on_real_2010_standards():
+    """User-reported: § sections mangled and running heads leaked. On the real
+    CFR pages, § 35.151 and its letter paragraphs must be clauses, the junk
+    '28' clause must not exist, and furniture must not pollute clause text."""
+    pytest.importorskip("docling")
+    from planlint.ingest.semantic import _docling_items
+
+    pdf = SAMPLES / "2010-design-standards.pdf"
+    if not pdf.exists():
+        pytest.skip("2010-design-standards.pdf not present")
+    clauses = build_clause_tree_from_structure(_docling_items(pdf, page_span=(10, 16)))
+    ids = {c.clause_id for c in clauses}
+    assert "35.151" in ids
+    assert "35.151.a" in ids
+    assert "28" not in ids
+    joined = "\n".join(c.text for c in clauses)
+    assert "Department of Justice" not in joined
+    assert "2010 Standards: Title II" not in joined
+
+
+@pytest.mark.docling
+def test_footer_not_in_clause_text_on_real_2010_standards():
+    pytest.importorskip("docling")
+    from planlint.ingest.semantic import _docling_items
+
+    pdf = SAMPLES / "2010-design-standards.pdf"
+    if not pdf.exists():
+        pytest.skip("2010-design-standards.pdf not present")
+    clauses = build_clause_tree_from_structure(_docling_items(pdf, page_span=(54, 56)))
+    joined = "\n".join(c.text for c in clauses)
+    assert "202.4" in {c.clause_id for c in clauses}
+    assert "Titles II and III - 2010 Standards" not in joined
+
+
+@pytest.mark.docling
+def test_running_heads_and_scope_on_real_cfr_pages():
+    """Pages 13–15 carry the 'Section 35.151 of 28 CFR Part 35' running head
+    at each page top: (c)'s paragraphs must stay under 35.151.c and (5) must
+    become 35.151.c.5, not 35.151.5."""
+    pytest.importorskip("docling")
+    from planlint.ingest.semantic import _docling_items
+
+    pdf = SAMPLES / "2010-design-standards.pdf"
+    if not pdf.exists():
+        pytest.skip("2010-design-standards.pdf not present")
+    clauses = build_clause_tree_from_structure(_docling_items(pdf, page_span=(10, 15)))
+    ids = {c.clause_id for c in clauses}
+    assert "35.151.c" in ids
+    assert "35.151.c.5" in ids
+    assert "35.151.5" not in ids
+    by_id = {c.clause_id: c for c in clauses}
+    assert "September 15, 2010" not in by_id["35.151"].text
+
+
+@pytest.mark.docling
+def test_index_pages_do_not_leak_on_real_2010_standards():
+    pytest.importorskip("docling")
+    from planlint.ingest.semantic import _docling_items
+
+    pdf = SAMPLES / "2010-design-standards.pdf"
+    if not pdf.exists():
+        pytest.skip("2010-design-standards.pdf not present")
+    clauses = build_clause_tree_from_structure(_docling_items(pdf, page_span=(268, 270)))
+    joined = "\n".join(c.text for c in clauses)
+    assert "Application and Scoping" not in joined
 
 
 def test_isolated_simple_parse_stays_in_process():

@@ -31,6 +31,20 @@ _ID_ONLY = re.compile(r"^\d+(?:\.\d+)+$")
 # number followed by an uppercase title. Used to split blocks whose text glues
 # a heading onto the tail of the previous paragraph.
 _HEADER_LINE = re.compile(r"^\d+(?:\.\d+)*(?:\s*$|\s+[A-Z])")
+# CFR-style section marks: "§ 35.151 …" / "§§ 36.407-36.499 …". Stripped
+# before number matching so the section number becomes the clause id.
+_SECTION_MARK = re.compile(r"^§+\s*")
+# A citation-style running title ("28 CFR part 35.151 …") — the leading
+# number is the CFR title, never a section id.
+_CFR_CITATION = re.compile(r"^CFR\b", re.IGNORECASE)
+# Per-page running heads citing the enclosing division ("Section 35.151 of
+# 28 CFR Part 35", "Subpart D of 28 CFR Part 36"). Matching one as a header
+# would merge into the real clause at every page break, splitting its content
+# and resetting paragraph scope — they must vanish entirely.
+_RUNNING_CITATION = re.compile(
+    r"^(?:section|subpart|chapter|part|appendix)\s+\S{1,12}\s+of\s+\d+\s+CFR\b",
+    re.IGNORECASE,
+)
 
 
 def _clause_start_match(text: str) -> re.Match | None:
@@ -45,6 +59,7 @@ def _clause_start_match(text: str) -> re.Match | None:
     - dot leaders on the title line mean a table-of-contents entry, which
       would otherwise claim the id long before the real body section appears.
     """
+    text = _SECTION_MARK.sub("", text)
     match = _CLAUSE_START.match(text)
     if match is None:
         return None
@@ -175,25 +190,48 @@ _SECTION_WORD = re.compile(
 # Short zone/appendix codes that headline a section on their own line ("AG",
 # "O", "PMD2") — joined with the next header, which carries the title.
 _CODE_ONLY = re.compile(r"^[A-Z]{1,4}\d{0,2}$")
-_TOC_TITLE = re.compile(r"^(?:table\s+of\s+)?contents$", re.IGNORECASE)
+_TOC_TITLE = re.compile(
+    r"^(?:(?:table\s+of\s+)?contents|index(?:\s+and\s+list\s+of\s+figures)?)$",
+    re.IGNORECASE,
+)
 # "(1) PERMITTED USES" — numbered subsection of the enclosing section. These
 # repeat across zones, so they are scoped under their parent's id.
 _PAREN_NUMBER = re.compile(r"^\((?P<n>\d{1,3})\)\s*(?P<title>.*)$", re.DOTALL)
+# "(a) Design and construction." — CFR letter paragraph, scoped under its
+# section so 35.151(a) becomes clause 35.151.a.
+_PAREN_LETTER = re.compile(r"^\((?P<letter>[a-z])\)\s*(?P<title>.*)$", re.DOTALL)
 # Zone code embedded in a title: "RURAL RESIDENTIAL (RR) ZONE" -> RR.
 _CODE_IN_TITLE = re.compile(r"\(([A-Z]{1,5}\d{0,2})\)")
 
 
-def _header_identity(text: str) -> tuple[str, str] | None:
-    """Derive (clause_id, title) from a header's text; None when the header
-    doesn't identify a section (e.g. a document title)."""
+def _numbered_identity(text: str) -> tuple[str, str] | None:
+    """(clause_id, title) when the text is a *numbered* section heading —
+    '404.2.3 Clear Width', '§ 35.151 …', 'SECTION 10 – ZONING'. None
+    otherwise. The strict subset of _header_identity that is allowed to end a
+    TOC/index run."""
+    text = _SECTION_MARK.sub("", text)
     numbered = _CLAUSE_START.match(text)
+    if numbered and _CFR_CITATION.match(numbered.group("rest").lstrip()):
+        return None  # "28 CFR part 35.151 …" — running title, not section 28
     if numbered and (
         "." in numbered.group("id") or len(numbered.group("id")) <= 3
     ):
         return numbered.group("id"), numbered.group("rest").strip().splitlines()[0][:120]
     section = _SECTION_WORD.match(text)
     if section:
-        return section.group("id"), section.group("title").strip()[:120]
+        title = section.group("title").strip()
+        if re.match(r"of\b", title, re.IGNORECASE):
+            return None  # "Section 5 of the Act" — a citation, not a heading
+        return section.group("id"), title[:120]
+    return None
+
+
+def _header_identity(text: str) -> tuple[str, str] | None:
+    """Derive (clause_id, title) from a header's text; None when the header
+    doesn't identify a section (e.g. a document title)."""
+    identity = _numbered_identity(text)
+    if identity is not None:
+        return identity
     # Unnumbered section ("OPEN SPACE (O) ZONE"): codebooks set these in caps.
     # Mixed-case unnumbered headers are document titles/subtitles, not sections.
     first_line = text.strip().splitlines()[0]
@@ -202,6 +240,15 @@ def _header_identity(text: str) -> tuple[str, str] | None:
         clause_id = code.group(1) if code else first_line[:48]
         return clause_id, first_line[:120]
     return None
+
+
+def _is_toc_table(text: str) -> bool:
+    """A table whose rows are mostly dot-leader entries is a rendered table
+    of contents, not a content table."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return sum(1 for line in lines if _TOC_LEADER.search(line)) * 2 >= len(lines)
 
 
 def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[RegulationClause]:
@@ -220,6 +267,12 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
     # The id that "(n) …" subsection headers scope under: the most recent
     # clause that was not itself a paren-numbered subsection.
     paren_scope: str | None = None
+    # The most recent "(a) …" letter paragraph — digit parens nest under it
+    # when active, so 35.151(a)(2) becomes clause 35.151.a.2. last_letter
+    # enforces the a, b, c… sequence: a paren letter that doesn't continue it
+    # is a roman numeral ("(v)", "(x)") or a stray, not a paragraph.
+    letter_scope: str | None = None
+    last_letter: str | None = None
 
     def start_clause(
         clause_id: str, title: str, body: str, page: int, bbox: BBox | None
@@ -256,13 +309,21 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
         # A header that is itself a TOC entry (dot leaders) is not a section.
         if is_header and _TOC_LEADER.search(text.splitlines()[0]):
             is_header = False
+        if is_header and _RUNNING_CITATION.match(text):
+            continue  # per-page running head ("Section 35.151 of 28 CFR Part 35")
         if is_header:
             if _TOC_TITLE.match(text):
                 in_toc = True
                 current = None
                 pending_code = None
                 continue
-            in_toc = False
+            if in_toc:
+                # Only a real numbered section heading ends a TOC/index run —
+                # entry headings, letter dividers, and zone-code fragments in
+                # the listing all stay dropped.
+                if _numbered_identity(text) is None:
+                    continue
+                in_toc = False
             if _CODE_ONLY.fullmatch(text) and pending_code is None:
                 pending_code = item  # zone code; title arrives with the next header
                 continue
@@ -273,13 +334,28 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                 body = f"{clause_id}\n{text}"
                 pending_code = None
                 paren_scope = clause_id
+                letter_scope = None
+                last_letter = None
             else:
                 paren = _PAREN_NUMBER.match(text)
-                if paren is not None:
-                    if paren_scope is None:
+                letter = _PAREN_LETTER.match(text)
+                if letter is not None:
+                    expected = "a" if last_letter is None else chr(ord(last_letter) + 1)
+                    if paren_scope is None or letter.group("letter") != expected:
+                        is_header = False  # roman numeral, out-of-sequence, or stray
+                    else:
+                        clause_id = f"{paren_scope}.{letter.group('letter')}"
+                        title = letter.group("title").strip().splitlines()[0][:120]
+                        page, bbox = item.page, item.bbox
+                        body = text
+                        letter_scope = clause_id
+                        last_letter = letter.group("letter")
+                elif paren is not None:
+                    scope = letter_scope or paren_scope
+                    if scope is None:
                         is_header = False  # stray "(n)" before any section
                     else:
-                        clause_id = f"{paren_scope}.{paren.group('n')}"
+                        clause_id = f"{scope}.{paren.group('n')}"
                         title = paren.group("title").strip().splitlines()[0][:120]
                         page, bbox = item.page, item.bbox
                         body = text
@@ -292,9 +368,15 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                         page, bbox = item.page, item.bbox
                         body = text
                         paren_scope = clause_id
+                        letter_scope = None
+                        last_letter = None
         if is_header:
             start_clause(clause_id, title, body, page, bbox)
         else:
+            if _TOC_TITLE.match(text):
+                # TOC titles sometimes arrive as body text, not headers.
+                in_toc = True
+                continue
             if in_toc or current is None:
                 continue  # preamble / TOC content is dropped
             if pending_code is not None:
@@ -304,11 +386,22 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                 )
                 by_id[current.clause_id] = current
                 pending_code = None
+            if item.kind == "table":
+                # Tables attach whole (never header-split); dot-leader tables
+                # are tables of contents, not content — dropped.
+                if not _is_toc_table(text):
+                    current = current.model_copy(
+                        update={"text": current.text + "\n" + text}
+                    )
+                    by_id[current.clause_id] = current
+                continue
             # Layout models emit run-in section headings ("306.3.1 General.
             # Space under…") as body text; split them out so each numbered
             # section becomes its own clause instead of vanishing into the
             # enclosing one.
             for segment in _split_header_segments(text):
+                if _RUNNING_CITATION.match(segment):
+                    continue  # running head that arrived as body text
                 match = _clause_start_match(segment)
                 # Text-derived splits additionally require a dotted id:
                 # dotless section headings ("303 Urinals") come through as
@@ -328,6 +421,8 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                         bbox=item.bbox,
                     )
                     paren_scope = match.group("id")
+                    letter_scope = None
+                    last_letter = None
                 else:
                     current = current.model_copy(
                         update={"text": current.text + "\n" + segment}

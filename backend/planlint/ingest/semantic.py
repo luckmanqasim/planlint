@@ -22,6 +22,7 @@ from planlint.config import settings
 from planlint.ingest.clause_tree import (
     StructuredItem,
     TextBlock,
+    _clause_start_match,
     build_clause_tree,
     build_clause_tree_from_structure,
 )
@@ -104,26 +105,48 @@ def _docling_items(
     return items
 
 
+def _is_margin_furniture(text: str, top: float, bottom: float, page_height: float) -> bool:
+    """A short standalone text item lying entirely inside the page's top or
+    bottom margin band: a running head or page footer the layout model failed
+    to label as furniture ("Titles II and III - 2010 Standards - 20").
+
+    Positional, not textual — repeated but meaningful body lines
+    ("EXCEPTIONS:") must never be stripped, and a clause heading typeset low
+    on a page is protected by the clause-start check."""
+    lines = [line for line in text.strip().splitlines() if line.strip()]
+    if not lines or len(lines) > 2 or any(len(line) > 90 for line in lines):
+        return False
+    if _clause_start_match(text.strip()):
+        return False
+    in_top_band = bottom <= page_height * 0.08
+    in_bottom_band = top >= page_height * 0.92
+    return in_top_band or in_bottom_band
+
+
 def _items_from_document(document) -> list[StructuredItem]:
     """Extract StructuredItems from one converted (chunk) document."""
     from docling_core.types.doc import DocItemLabel, TableItem  # lazy: heavy import
 
-    def provenance(item) -> tuple[int, tuple | None]:
+    def provenance(item) -> tuple[int, tuple | None, float]:
         prov = getattr(item, "prov", None)
         if not prov:
-            return 0, None
+            return 0, None, 0.0
         page_no = prov[0].page_no
         b = prov[0].bbox
         page_height = document.pages[page_no].size.height
         # Docling uses bottom-left origin; flip to top-left PDF points.
-        return max(page_no - 1, 0), (b.l, page_height - b.t, b.r, page_height - b.b)
+        return (
+            max(page_no - 1, 0),
+            (b.l, page_height - b.t, b.r, page_height - b.b),
+            page_height,
+        )
 
     items: list[StructuredItem] = []
     for item, _level in document.iterate_items():
         label = getattr(item, "label", None)
         if label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
             continue  # page numbers ('10-95') and running titles are not content
-        page, bbox = provenance(item)
+        page, bbox, page_height = provenance(item)
         if isinstance(item, TableItem):
             try:
                 table_text = item.export_to_markdown(doc=document)
@@ -136,6 +159,12 @@ def _items_from_document(document) -> list[StructuredItem]:
         if not text:
             continue
         kind = "header" if label in (DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE) else "text"
+        if (
+            kind == "text"
+            and bbox is not None
+            and _is_margin_furniture(text, bbox[1], bbox[3], page_height)
+        ):
+            continue  # running head / page footer the layout model missed
         items.append(StructuredItem(kind, text, page, bbox))
     return items
 
