@@ -151,10 +151,10 @@ async def ingest_floorplan(
     doc = await asyncio.to_thread(pymupdf.open, pdf_path)
     try:
         total = len(doc)
-        for page_index in range(total):
+
+        async def process_page(page_index: int) -> str:
             page = doc[page_index]
             page_type, primitives, labels, png = await asyncio.to_thread(_analyze_page, page)
-            pdf_type = pdf_type or page_type
 
             if settings.planlint_fake_llm:
                 vlm_page: VlmPage = fake_detect_from_labels(labels)
@@ -271,6 +271,38 @@ async def ingest_floorplan(
                     progress=(page_index + 1) / total,
                 )
             )
+            return page_type
+
+        for page_index in range(total):
+            try:
+                page_type = await process_page(page_index)
+                pdf_type = pdf_type or page_type
+            except Exception as error:
+                # One unreadable page (an elevation, a section, or any page the
+                # VLM can't box even after retries) must not abort the whole
+                # document — mirror the per-asset isolation in run_verification.
+                # Record the page as an empty sheet so it stays queryable, then
+                # move on.
+                await emit(
+                    RunEvent(
+                        stage="ingest:spatial",
+                        message=f"Page {page_index + 1}/{total}: detection failed "
+                        f"— skipped, needs manual review ({error})",
+                        level="warning",
+                    )
+                )
+                page = doc[page_index]
+                sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
+                await repo.create_sheet(
+                    sheet_id=sheet_id,
+                    document_id=document_id,
+                    page_number=page_index,
+                    width=page.rect.width,
+                    height=page.rect.height,
+                    scale_text=None,
+                    scale_in_per_point=None,
+                )
+                await repo.upsert_assets(sheet_id, [])
     finally:
         doc.close()
     await repo.mark_ingested(document_id, pdf_type)

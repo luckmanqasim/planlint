@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from planlint.config import settings
+from planlint.ingest.llm_parser import parse_codebook_llm
 from planlint.ingest.semantic import parse_codebook_isolated
 from planlint.ingest.spatial import ingest_floorplan
 from planlint.models import (
@@ -56,13 +57,32 @@ async def ingest_pending_documents(
         path = Path(document["path"])
         if document["kind"] == "codebook":
             await emit(RunEvent(stage="ingest:semantic", message=f"Parsing {document['filename']}"))
-            # PDF parsing and embedding are sync CPU-bound: run them in
-            # threads so the SSE stream (and every other request) stays live.
-            # (The Docling path additionally runs in a subprocess so its ~2 GB
-            # working set returns to the OS instead of living in this process.)
-            clauses = await asyncio.to_thread(
-                parse_codebook_isolated, path, settings.planlint_semantic_parser
-            )
+            parser_mode = settings.planlint_semantic_parser
+            if parser_mode == "llm" and settings.planlint_fake_llm:
+                parser_mode = "simple"  # fake-LLM mode never makes model calls
+            if parser_mode == "llm":
+                # Already-async per-page vision transcription, verified
+                # against the text layer inside the parser.
+                clauses, unverified = await parse_codebook_llm(path, vision_model)
+                if unverified:
+                    await emit(
+                        RunEvent(
+                            stage="ingest:semantic",
+                            message=f"{document['filename']}: {unverified} page(s) "
+                            "have no text layer — transcription could not be "
+                            "cross-checked",
+                            level="warning",
+                        )
+                    )
+            else:
+                # PDF parsing and embedding are sync CPU-bound: run them in
+                # threads so the SSE stream (and every other request) stays
+                # live. (The Docling path additionally runs in a subprocess so
+                # its ~2 GB working set returns to the OS instead of living in
+                # this process.)
+                clauses = await asyncio.to_thread(
+                    parse_codebook_isolated, path, parser_mode
+                )
             embeddings = await asyncio.to_thread(
                 embedder.embed, [f"{c.hierarchy_path}\n{c.text}" for c in clauses]
             )

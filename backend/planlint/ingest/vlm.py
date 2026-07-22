@@ -91,11 +91,15 @@ def build_detection_agent(model) -> Agent:
     out-of-range coordinates) are bounced back with ModelRetry instead of
     corrupting the overlay."""
     # temperature 0: detection should be reproducible run-to-run.
+    # retries=2 (above the default 1): a busy or non-plan-view page often needs
+    # a second correction before the boxes validate; the caller isolates the
+    # page if even that fails, so exhausting retries never sinks the run.
     agent = Agent(
         model,
         output_type=VlmPage,
         instructions=_INSTRUCTIONS,
         model_settings={"temperature": 0.0},
+        retries=2,
     )
 
     @agent.output_validator
