@@ -18,6 +18,8 @@ import pymupdf
 from planlint.config import settings
 from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
+from planlint.ingest.schedule import parse_schedule
+from planlint.ingest.sheet_type import SheetType, classify_sheet
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, fake_detect_from_labels
 from planlint.models import AssetType, Parameter, PhysicalAsset, RunEvent
 
@@ -25,6 +27,22 @@ EmitFn = Callable[[RunEvent], Awaitable[None]]
 
 _OPENING_TYPES = (AssetType.DOOR, AssetType.FIRE_EXIT, AssetType.WINDOW)
 _SPACE_TYPES = (AssetType.ROOM, AssetType.CORRIDOR)
+
+# Sheet types with no plan-view geometry to detect: recorded, but not linted.
+# OTHER is deliberately absent — an untitled drawing (a bare floor-plan PDF with
+# no title block) falls through to the detector rather than being skipped.
+_SKIP_SHEET_TYPES = frozenset(
+    {
+        SheetType.ELEVATION,
+        SheetType.SECTION,
+        SheetType.FOUNDATION,
+        SheetType.ROOF,
+        SheetType.SITE,
+        SheetType.RCP_ELECTRICAL,
+        SheetType.DETAIL,
+        SheetType.COVER_NOTES,
+    }
+)
 
 _ocr_engine = None  # lazy singleton; model load is expensive
 
@@ -152,8 +170,54 @@ async def ingest_floorplan(
     try:
         total = len(doc)
 
+        async def record_sheet(page_index, page, assets, scale_text, scale) -> None:
+            sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
+            await repo.create_sheet(
+                sheet_id=sheet_id,
+                document_id=document_id,
+                page_number=page_index,
+                width=page.rect.width,
+                height=page.rect.height,
+                scale_text=scale_text,
+                scale_in_per_point=scale,
+            )
+            await repo.upsert_assets(sheet_id, assets)
+
         async def process_page(page_index: int) -> str:
             page = doc[page_index]
+            # Route by sheet type: a construction set is mostly non-plan-view
+            # sheets, and running the plan-view detector on an elevation or
+            # section produces garbage boxes. Classify first, then dispatch.
+            sheet_type = await asyncio.to_thread(classify_sheet, page)
+
+            if sheet_type is SheetType.SCHEDULE:
+                page_type = await asyncio.to_thread(geometry.detect_pdf_type, page)
+                assets = await asyncio.to_thread(parse_schedule, page)
+                await record_sheet(page_index, page, assets, None, None)
+                await emit(
+                    RunEvent(
+                        stage="ingest:spatial",
+                        message=f"Page {page_index + 1}/{total}: schedule — "
+                        f"{len(assets)} opening(s) tabulated",
+                        progress=(page_index + 1) / total,
+                    )
+                )
+                return page_type
+
+            if sheet_type in _SKIP_SHEET_TYPES:
+                page_type = await asyncio.to_thread(geometry.detect_pdf_type, page)
+                await record_sheet(page_index, page, [], None, None)
+                await emit(
+                    RunEvent(
+                        stage="ingest:spatial",
+                        message=f"Page {page_index + 1}/{total}: {sheet_type.value} "
+                        "— not linted",
+                        progress=(page_index + 1) / total,
+                    )
+                )
+                return page_type
+
+            # FLOOR_PLAN or OTHER (untitled): run the plan-view detector.
             page_type, primitives, labels, png = await asyncio.to_thread(_analyze_page, page)
 
             if settings.planlint_fake_llm:
@@ -252,17 +316,7 @@ async def ingest_floorplan(
                     )
                 )
 
-            sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
-            await repo.create_sheet(
-                sheet_id=sheet_id,
-                document_id=document_id,
-                page_number=page_index,
-                width=page.rect.width,
-                height=page.rect.height,
-                scale_text=scale_text,
-                scale_in_per_point=scale,
-            )
-            await repo.upsert_assets(sheet_id, assets)
+            await record_sheet(page_index, page, assets, scale_text, scale)
             await emit(
                 RunEvent(
                     stage="ingest:spatial",
@@ -291,18 +345,7 @@ async def ingest_floorplan(
                         level="warning",
                     )
                 )
-                page = doc[page_index]
-                sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
-                await repo.create_sheet(
-                    sheet_id=sheet_id,
-                    document_id=document_id,
-                    page_number=page_index,
-                    width=page.rect.width,
-                    height=page.rect.height,
-                    scale_text=None,
-                    scale_in_per_point=None,
-                )
-                await repo.upsert_assets(sheet_id, [])
+                await record_sheet(page_index, doc[page_index], [], None, None)
     finally:
         doc.close()
     await repo.mark_ingested(document_id, pdf_type)
