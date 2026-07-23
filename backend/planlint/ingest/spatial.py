@@ -18,6 +18,7 @@ import pymupdf
 from planlint.config import settings
 from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
+from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.schedule import parse_schedule
 from planlint.ingest.sheet_type import SheetType, classify_sheet
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, fake_detect_from_labels
@@ -28,13 +29,13 @@ EmitFn = Callable[[RunEvent], Awaitable[None]]
 _OPENING_TYPES = (AssetType.DOOR, AssetType.FIRE_EXIT, AssetType.WINDOW)
 _SPACE_TYPES = (AssetType.ROOM, AssetType.CORRIDOR)
 
-# Sheet types with no plan-view geometry to detect: recorded, but not linted.
-# OTHER is deliberately absent — an untitled drawing (a bare floor-plan PDF with
-# no title block) falls through to the detector rather than being skipped.
+# Sheet types with no linted geometry: recorded, but not detected. OTHER is
+# deliberately absent — an untitled drawing (a bare floor-plan PDF with no title
+# block) falls through to the plan-view detector rather than being skipped.
+# ELEVATION/SECTION are absent too: they route to the vertical-dimension
+# detector (stair riser/tread), not the skip path.
 _SKIP_SHEET_TYPES = frozenset(
     {
-        SheetType.ELEVATION,
-        SheetType.SECTION,
         SheetType.FOUNDATION,
         SheetType.ROOF,
         SheetType.SITE,
@@ -43,6 +44,8 @@ _SKIP_SHEET_TYPES = frozenset(
         SheetType.COVER_NOTES,
     }
 )
+
+_ELEVATION_TYPES = frozenset({SheetType.ELEVATION, SheetType.SECTION})
 
 _ocr_engine = None  # lazy singleton; model load is expensive
 
@@ -199,6 +202,24 @@ async def ingest_floorplan(
                         stage="ingest:spatial",
                         message=f"Page {page_index + 1}/{total}: schedule — "
                         f"{len(assets)} opening(s) tabulated",
+                        progress=(page_index + 1) / total,
+                    )
+                )
+                return page_type
+
+            if sheet_type in _ELEVATION_TYPES:
+                # Vertical dimensions (stair riser/tread) live here, not on plans.
+                page_type, _prim, _labels, png = await asyncio.to_thread(_analyze_page, page)
+                assets: list[PhysicalAsset] = []
+                if not settings.planlint_fake_llm and png is not None:
+                    text_layer = await asyncio.to_thread(page.get_text)
+                    assets = await detect_elevation_page(png, text_layer, model)
+                await record_sheet(page_index, page, assets, None, None)
+                await emit(
+                    RunEvent(
+                        stage="ingest:spatial",
+                        message=f"Page {page_index + 1}/{total}: {sheet_type.value} — "
+                        f"{len(assets)} stair dimension(s)",
                         progress=(page_index + 1) / total,
                     )
                 )

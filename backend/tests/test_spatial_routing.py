@@ -27,8 +27,8 @@ async def test_only_floor_plans_are_detected_schedules_are_parsed(
     _blank_pdf(pdf, pages=3)
     monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
 
-    # Page 0 elevation (skip), page 1 floor plan (detect), page 2 schedule (parse).
-    order = [SheetType.ELEVATION, SheetType.FLOOR_PLAN, SheetType.SCHEDULE]
+    # Page 0 foundation (skip), page 1 floor plan (detect), page 2 schedule (parse).
+    order = [SheetType.FOUNDATION, SheetType.FLOOR_PLAN, SheetType.SCHEDULE]
     seen = {"i": 0}
 
     def fake_classify(page):
@@ -75,6 +75,6 @@ async def test_only_floor_plans_are_detected_schedules_are_parsed(
     # All three pages recorded; the schedule's door is the only asset.
     assert len(fake_repo.sheets) == 3
     assert [a["type"] for a in fake_repo.assets.values()] == ["door"]
-    # The elevation page was recorded but flagged not-linted.
+    # The foundation page was recorded but flagged not-linted.
     assert any("not linted" in e.message for e in events)
     assert any("schedule — 1 opening" in e.message for e in events)
