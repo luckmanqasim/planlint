@@ -384,7 +384,11 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
           onPointerUp();
           setHoverId(null);
         }}
-        className="max-h-[72vh] overflow-auto overscroll-contain rounded-md"
+        // scrollbar-gutter:stable reserves the scrollbar's space permanently so
+        // clientWidth doesn't flip when the vertical scrollbar toggles — without
+        // it the ResizeObserver → refit → scrollbar → refit loop makes pages
+        // whose fitted height sits at the max-height threshold visibly shake.
+        className="max-h-[72vh] overflow-auto overscroll-contain rounded-md [scrollbar-gutter:stable]"
       >
         <div className="relative inline-block">
           <canvas ref={pdfCanvasRef} className="block rounded-md bg-white" />
