@@ -21,6 +21,7 @@ from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.schedule import parse_schedule
 from planlint.ingest.sheet_type import SheetType, classify_sheet
+from planlint.ingest.vector_geometry import classify_opening_vector
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, fake_detect_from_labels
 from planlint.models import AssetType, Parameter, PhysicalAsset, RunEvent
 
@@ -281,10 +282,28 @@ async def ingest_floorplan(
             for index, entity in enumerate(vlm_page.entities):
                 opening_width_pt: float | None = None
                 fill_area_pt2: float | None = None
+                opening_result = None
                 if page_type == "vector":
-                    bbox, snapped = geometry.snap_box(entity.box, primitives)
-                    source = "vector-snapped" if snapped else "vlm-only"
-                    confidence = 0.95 if snapped else 0.6
+                    # Rooms snap to their bounding walls; openings are judged
+                    # against wall-run gaps (refuted claims are dropped outright).
+                    # Using the opening snap on a room unions interior clutter
+                    # and mangles its box.
+                    if entity.entity_type in _SPACE_TYPES:
+                        bbox, snapped = geometry.snap_room_box(entity.box, primitives, labels)
+                        source = "vector-snapped" if snapped else "vlm-only"
+                        confidence = 0.95 if snapped else 0.6
+                    elif entity.entity_type in _OPENING_TYPES:
+                        opening_result = classify_opening_vector(entity.box, primitives, labels)
+                        if opening_result.kind == "refuted":
+                            continue  # not a real opening (solid wall / chimney)
+                        if opening_result.kind == "snapped":
+                            bbox, source, confidence = opening_result.bbox, "vector-snapped", 0.95
+                        else:  # unknown — keep the VLM box for review
+                            bbox, source, confidence = entity.box, "vlm-only", 0.6
+                    else:
+                        bbox, snapped = geometry.snap_box(entity.box, primitives, labels)
+                        source = "vector-snapped" if snapped else "vlm-only"
+                        confidence = 0.95 if snapped else 0.6
                 elif index in raster_snaps:
                     bbox, opening_width_pt, fill_area_pt2 = raster_snaps[index]
                     source, confidence = "raster-snapped", 0.8
@@ -296,6 +315,12 @@ async def ingest_floorplan(
                     measurements, from_label = measured
                     if not from_label:
                         confidence = min(confidence, 0.6)  # geometry heuristic
+                if (
+                    opening_result is not None
+                    and opening_result.kind == "snapped"
+                    and scale is not None
+                ):
+                    measurements[Parameter.CLEAR_WIDTH] = round(opening_result.width_pt * scale, 1)
                 if (
                     opening_width_pt is not None
                     and scale is not None
@@ -326,6 +351,18 @@ async def ingest_floorplan(
                                     level="warning",
                                 )
                             )
+                # Every asset must carry something real: a name, a measurement,
+                # or geometry it actually snapped to (source != vlm-only). A bare
+                # VLM guess with none of those is noise, not an asset. Rooms are
+                # stricter — a pair of wall-like lines lets snap_room_box
+                # "confirm" a phantom — so a room needs a name or a printed area
+                # regardless of whether it snapped.
+                name = entity.name.strip()
+                if entity.entity_type == AssetType.ROOM:
+                    if not name and Parameter.AREA not in measurements:
+                        continue
+                elif source == "vlm-only" and not name and not measurements:
+                    continue
                 assets.append(
                     PhysicalAsset(
                         type=entity.entity_type,

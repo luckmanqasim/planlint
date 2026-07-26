@@ -8,6 +8,7 @@ the vector geometry whenever the PDF has any.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from planlint.models import BBox, Parameter
@@ -20,13 +21,22 @@ LABEL_RADIUS_PT = 40.0
 # excluded from snapping so a door box never unions in a 30-ft wall.
 MAX_SNAP_SEGMENT_PT = 100.0
 
+# A room/corridor's extent is bounded by those long wall runs, so it needs the
+# opposite treatment from an opening. These govern snapping a space box to walls.
+WALL_MIN_PT = 40.0          # a straight run this long is a wall, not clutter
+ROOM_EDGE_SEARCH_PT = 24.0  # a room edge may sit this far from its bounding wall
+_AXIS_TOL_PT = 2.0          # max deviation for a run to count as axis-aligned
+
 
 @dataclass(frozen=True)
 class Primitive:
-    """A straight line segment in page coordinates (PDF points)."""
+    """A line segment in page coordinates (PDF points). `is_curve` marks a chord
+    standing in for a bezier (e.g. a door swing arc) — its length is the chord,
+    not a real straight edge, so it must not be measured as a clear width."""
 
     p0: tuple[float, float]
     p1: tuple[float, float]
+    is_curve: bool = False
 
     @property
     def length(self) -> float:
@@ -62,9 +72,11 @@ def extract_primitives(page) -> tuple[list[Primitive], list[TextLabel]]:
                 corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)]
                 for a, b in zip(corners, corners[1:] + corners[:1]):
                     primitives.append(Primitive(p0=a, p1=b))
-            elif kind == "c":  # bezier: approximate by its chord
+            elif kind == "c":  # bezier: approximate by its chord (e.g. door swing)
                 p0, p3 = item[1], item[4]
-                primitives.append(Primitive(p0=(p0.x, p0.y), p1=(p3.x, p3.y)))
+                primitives.append(
+                    Primitive(p0=(p0.x, p0.y), p1=(p3.x, p3.y), is_curve=True)
+                )
 
     # Line-level text (blocks merge unrelated labels that share a baseline).
     labels: list[TextLabel] = []
@@ -139,14 +151,35 @@ def _contains(box: BBox, point: tuple[float, float]) -> bool:
     return x0 <= point[0] <= x1 and y0 <= point[1] <= y1
 
 
-def snap_box(vlm_box: BBox, primitives: list[Primitive]) -> tuple[BBox, bool]:
+def _touches_text(seg: Primitive, labels: Sequence[TextLabel], pad: float = 2.0) -> bool:
+    """True when either endpoint of `seg` sits inside a text label's (inflated)
+    bbox — the signature of a callout leader or a label underline, which
+    terminate at their text. Walls, door leaves, and swing arcs end at geometry
+    (jambs, corners), never at text, so excluding text-terminated segments drops
+    annotation without harming real snap targets."""
+    for label in labels:
+        box = _inflate(label.bbox, pad)
+        if _contains(box, seg.p0) or _contains(box, seg.p1):
+            return True
+    return False
+
+
+def snap_box(
+    vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = ()
+) -> tuple[BBox, bool]:
     """Snap an approximate VLM box to the exact vector geometry beneath it.
 
     Returns (bbox, snapped). When no primitive's midpoint falls inside the
-    inflated VLM box, the original box is returned unsnapped.
+    inflated VLM box, the original box is returned unsnapped. Segments that
+    terminate at a text label (callout leaders, label underlines) are excluded
+    so the box snaps to real geometry, not annotation.
     """
     search = _inflate(vlm_box, SNAP_INFLATE_PT)
-    candidates = [p for p in primitives if p.length <= MAX_SNAP_SEGMENT_PT]
+    candidates = [
+        p
+        for p in primitives
+        if p.length <= MAX_SNAP_SEGMENT_PT and not _touches_text(p, labels)
+    ]
     nearby = [p for p in candidates if _contains(search, p.midpoint)]
     if not nearby:
         return vlm_box, False
@@ -170,6 +203,210 @@ def snap_box(vlm_box: BBox, primitives: list[Primitive]) -> tuple[BBox, bool]:
     xs = [c for p in cluster for c in (p.p0[0], p.p1[0])]
     ys = [c for p in cluster for c in (p.p0[1], p.p1[1])]
     return (min(xs), min(ys), max(xs), max(ys)), True
+
+
+def snap_room_box(
+    vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = ()
+) -> tuple[BBox, bool]:
+    """Snap a room/corridor box to the long wall runs that bound it.
+
+    A space is enclosed by long walls, which `snap_box` deliberately excludes as
+    structural — so running a room through the opening snap corrupts its box by
+    unioning whatever short interior clutter (door leaves, fixtures, dimension
+    ticks) happens to sit inside. Here each edge instead moves to the nearest
+    axis-aligned wall within ROOM_EDGE_SEARCH_PT whose run spans the room across
+    that edge. Runs that terminate at a text label (dimension/label lines) are
+    excluded so an edge doesn't snap to a dimension line instead of the wall.
+    Edges with no such wall keep the VLM position, and the box is only reported
+    snapped when at least two edges found a wall — a lone match is too weak to
+    trust, so we fall back to the (wall-to-wall) VLM box instead.
+    """
+    x0, y0, x1, y1 = vlm_box
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+
+    verticals: list[tuple[float, float, float]] = []  # (x, y_lo, y_hi)
+    horizontals: list[tuple[float, float, float]] = []  # (y, x_lo, x_hi)
+    for p in primitives:
+        if p.length < WALL_MIN_PT or _touches_text(p, labels):
+            continue
+        (ax0, ay0), (ax1, ay1) = p.p0, p.p1
+        if abs(ax1 - ax0) <= _AXIS_TOL_PT:
+            verticals.append(((ax0 + ax1) / 2, min(ay0, ay1), max(ay0, ay1)))
+        elif abs(ay1 - ay0) <= _AXIS_TOL_PT:
+            horizontals.append(((ay0 + ay1) / 2, min(ax0, ax1), max(ax0, ax1)))
+
+    def nearest(target: float, walls: list[tuple[float, float, float]], across: float) -> float | None:
+        best: float | None = None
+        for coord, lo, hi in walls:
+            if abs(coord - target) <= ROOM_EDGE_SEARCH_PT and lo - _AXIS_TOL_PT <= across <= hi + _AXIS_TOL_PT:
+                if best is None or abs(coord - target) < abs(best - target):
+                    best = coord
+        return best
+
+    left, right = nearest(x0, verticals, cy), nearest(x1, verticals, cy)
+    top, bottom = nearest(y0, horizontals, cx), nearest(y1, horizontals, cx)
+    if sum(edge is not None for edge in (left, right, top, bottom)) < 2:
+        return vlm_box, False
+    return (
+        left if left is not None else x0,
+        top if top is not None else y0,
+        right if right is not None else x1,
+        bottom if bottom is not None else y1,
+    ), True
+
+
+# ------------------------------------------------------------- wall runs
+
+_OFFSET_TOL_PT = 2.0  # lines within this coordinate distance are the same wall run
+MIN_OPENING_PT = 8.0   # a gap smaller than this is a joint, not an opening
+MAX_OPENING_PT = 240.0 # a gap larger than this spans a room, not one opening
+
+
+@dataclass(frozen=True)
+class OpeningResult:
+    """Outcome of judging a claimed opening against the wall geometry.
+    kind: 'snapped' (real flanked gap — act on bbox/width_pt),
+          'refuted' (wall solid across, or a closed/hatched solid occupies it),
+          'unknown' (no determinable wall run — keep the VLM box for review)."""
+
+    kind: str
+    bbox: BBox | None = None
+    width_pt: float | None = None
+
+
+@dataclass(frozen=True)
+class WallRun:
+    """One straight wall line: orientation ('h' = constant y, 'v' = constant x),
+    its offset (that constant), and the merged intervals occupied by wall along
+    the run's axis (x for 'h', y for 'v')."""
+
+    orient: str
+    offset: float
+    intervals: tuple[tuple[float, float], ...]
+
+
+def _merge_intervals(spans: list[tuple[float, float]]) -> tuple[tuple[float, float], ...]:
+    spans = sorted(spans)
+    merged: list[tuple[float, float]] = []
+    for lo, hi in spans:
+        if merged and lo <= merged[-1][1] + _AXIS_TOL_PT:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return tuple(merged)
+
+
+def build_wall_runs(
+    primitives: list[Primitive], labels: Sequence[TextLabel] = ()
+) -> list[WallRun]:
+    """Group long, straight, axis-aligned wall segments into runs by orientation
+    and offset (curves and text-terminated segments excluded)."""
+    buckets: dict[tuple[str, int], tuple[float, list[tuple[float, float]]]] = {}
+    for p in primitives:
+        if p.is_curve or p.length < WALL_MIN_PT or _touches_text(p, labels):
+            continue
+        (ax0, ay0), (ax1, ay1) = p.p0, p.p1
+        if abs(ax1 - ax0) <= _AXIS_TOL_PT:  # vertical
+            offset = (ax0 + ax1) / 2
+            lo, hi = sorted((ay0, ay1))
+            orient = "v"
+        elif abs(ay1 - ay0) <= _AXIS_TOL_PT:  # horizontal
+            offset = (ay0 + ay1) / 2
+            lo, hi = sorted((ax0, ax1))
+            orient = "h"
+        else:
+            continue
+        key = (orient, round(offset / _OFFSET_TOL_PT))
+        rep, spans = buckets.setdefault(key, (offset, []))
+        spans.append((lo, hi))
+    return [
+        WallRun(orient=key[0], offset=rep, intervals=_merge_intervals(spans))
+        for key, (rep, spans) in buckets.items()
+    ]
+
+
+def _gap_in_run(run: WallRun, span_lo: float, span_hi: float) -> tuple[float, float] | None:
+    """The gap between two consecutive occupied intervals that overlaps the
+    claimed span — flanked by wall on both sides by construction. Rejects gaps
+    outside the plausible opening size."""
+    ivs = sorted(run.intervals)
+    for (_, a_hi), (b_lo, _) in zip(ivs, ivs[1:]):
+        gap_lo, gap_hi = a_hi, b_lo
+        if gap_hi <= gap_lo:
+            continue
+        overlaps = gap_lo < span_hi and gap_hi > span_lo
+        if overlaps and MIN_OPENING_PT <= (gap_hi - gap_lo) <= MAX_OPENING_PT:
+            return (gap_lo, gap_hi)
+    return None
+
+
+_HATCH_MIN_SEGMENTS = 5  # this many short interior strokes reads as fill/hatching
+
+
+def _gap_is_occupied(box: BBox, primitives: list[Primitive]) -> bool:
+    """True when the gap interior holds a closed/hatched solid (a chimney or
+    pier) rather than being empty except for glazing lines parallel to the wall.
+    Interior strokes are counted; a run of short, non-axis-aligned or crossing
+    segments is hatching/fill."""
+    interior = [p for p in primitives if not p.is_curve and _contains(box, p.midpoint)]
+    hatch = 0
+    for p in interior:
+        (x0, y0), (x1, y1) = p.p0, p.p1
+        axis_aligned = abs(x1 - x0) <= _AXIS_TOL_PT or abs(y1 - y0) <= _AXIS_TOL_PT
+        if not axis_aligned:
+            hatch += 1
+    return hatch >= _HATCH_MIN_SEGMENTS
+
+
+_RUN_NEAR_PT = 12.0  # a wall run this close to the box (perpendicular) hosts the opening
+
+
+def classify_opening_vector(
+    vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = ()
+) -> OpeningResult:
+    """Judge a claimed door/window box against vector wall geometry.
+
+    Only positive solid evidence (hatching/fill = a chimney or pier) refutes an
+    opening; an un-cut or unconfirmable wall yields 'unknown' (kept for review),
+    never a drop, so a real door drawn over a continuous wall is not lost."""
+    x0, y0, x1, y1 = vlm_box
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    runs = build_wall_runs(primitives, labels)
+
+    best: tuple[float, WallRun, tuple[float, float], str] | None = None
+    for run in runs:
+        if run.orient == "h":
+            if abs(run.offset - cy) > (y1 - y0) / 2 + _RUN_NEAR_PT:
+                continue
+            gap = _gap_in_run(run, x0, x1)
+            axis = "x"
+        else:
+            if abs(run.offset - cx) > (x1 - x0) / 2 + _RUN_NEAR_PT:
+                continue
+            gap = _gap_in_run(run, y0, y1)
+            axis = "y"
+        if gap is None:
+            continue
+        dist = abs(run.offset - (cy if run.orient == "h" else cx))
+        if best is None or dist < best[0]:
+            best = (dist, run, gap, axis)
+
+    if best is not None:
+        _, run, (gap_lo, gap_hi), axis = best
+        thickness = max(y1 - y0, MIN_OPENING_PT) if axis == "x" else max(x1 - x0, MIN_OPENING_PT)
+        if axis == "x":
+            bbox = (gap_lo, run.offset - thickness / 2, gap_hi, run.offset + thickness / 2)
+        else:
+            bbox = (run.offset - thickness / 2, gap_lo, run.offset + thickness / 2, gap_hi)
+        if _gap_is_occupied(bbox, primitives):
+            return OpeningResult(kind="refuted")  # a solid (hatched) shape fills the gap
+        return OpeningResult(kind="snapped", bbox=bbox, width_pt=gap_hi - gap_lo)
+
+    # No confirmable gap. Refute only on positive solid evidence in the claimed
+    # box (hatching = chimney/pier); otherwise keep for review.
+    if _gap_is_occupied(vlm_box, primitives):
+        return OpeningResult(kind="refuted")
+    return OpeningResult(kind="unknown")
 
 
 # --------------------------------------------------------------- measurement
@@ -206,7 +443,11 @@ def measure_asset(
 
     if scale is not None:
         search = _inflate(asset_box, SNAP_INFLATE_PT)
-        inside = [p for p in primitives if _contains(search, p.midpoint)]
+        # Curve chords (door swing arcs) are excluded: a 90° arc's chord is
+        # √2× its radius, so measuring it as the width over-reports a 36" door
+        # as ~51". The door leaf — a straight line the width of the opening —
+        # is the right segment to measure.
+        inside = [p for p in primitives if not p.is_curve and _contains(search, p.midpoint)]
         if inside:
             longest = max(p.length for p in inside)
             if longest > 0:

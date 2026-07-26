@@ -20,6 +20,25 @@ RENDER_ZOOM = 2.0  # pixels per PDF point when rasterizing pages for the VLM
 # Printed areas ('39.37 m²', '12 m2', '450 sq ft') do not belong in names.
 _AREA_IN_NAME = re.compile(r"\d\s*(?:m²|m2\b|sq\s*\.?\s*(?:m|ft)|ft²|ft2\b)", re.IGNORECASE)
 
+_SPACE_TYPES = (AssetType.ROOM, AssetType.CORRIDOR)
+# A bare number ('1') or single letter ('D') labelling a room is a callout /
+# detail-marker bubble (often on a dashed section-cut line), not a space name.
+_ROOM_CALLOUT = re.compile(r"^(?:\d+|[A-Za-z])$")
+
+
+def _resolve_space_name(entity: "VlmEntity") -> str | None:
+    """The room/corridor name cleaned of callouts, or None to drop the entity.
+
+    A bare callout ('A', '1') labelling a space is a section/detail cut marker,
+    not a room. With no printed area it is a phantom room — dropped entirely.
+    With an area (a numbered room) the callout name is blanked but the space
+    kept. Non-space entities pass through unchanged."""
+    if entity.entity_type not in _SPACE_TYPES:
+        return entity.name
+    if _ROOM_CALLOUT.match(entity.name.strip()):
+        return "" if entity.floor_area_m2 else None
+    return entity.name
+
 
 class VlmEntity(BaseModel):
     entity_type: AssetType
@@ -60,7 +79,10 @@ Drawing conventions — apply them strictly before classifying:
 - wall piers: a short hatched or solid wall stub between two openings (for
   example between two garage doors) is wall — never a window.
 - stair: a run of parallel treads, usually with a direction arrow.
-- room: a named enclosed space bounded by walls.
+- room: a named enclosed space bounded by walls. A callout/detail bubble — a
+  small circle or hexagon holding a letter or number ('A', '1'), often sitting
+  on a dashed or dotted section/detail cut line — is NOT a room and NOT a
+  physical entity; never report it (as a room or anything else).
 
 Only report an entity you are confident about; omit anything ambiguous
 rather than guessing.
@@ -71,6 +93,10 @@ For each entity return:
   ('GARAGE', 'CHAMBRE 2'), a door code ('D1'), or 'GARAGE DOOR' / 'FIRE
   EXIT'. NEVER include areas, dimension strings, wall-thickness numbers, or
   any other annotation text in the name. Empty string if unnamed.
+  For a room, the name is its descriptive space name in words ('KITCHEN',
+  'BEDROOM 2'). It is NEVER a callout or detail-marker bubble (a circled
+  number or single letter such as '1' or 'D') or a door tag — those are not
+  room names. If a room shows no descriptive name, return an empty string.
 - floor_area_m2: for rooms, the printed floor area as a bare number (39.37
   from '39.37 m²'); null when not printed or not a room.
 - box: [ymin, xmin, ymax, xmax] normalized to 1000 (0-1000 scale) covering
@@ -155,14 +181,16 @@ async def detect_page(image_png: bytes, model) -> VlmPage:
     page = result.output
     scaled = []
     for entity in page.entities:
+        name = _resolve_space_name(entity)
+        if name is None:
+            continue  # a bare callout marker mis-detected as a space — drop it
         ymin, xmin, ymax, xmax = entity.box
         # De-normalize from [0, 1000] scale to image pixels, then scale to PDF points
         x0 = (xmin / 1000.0) * img_width / RENDER_ZOOM
         y0 = (ymin / 1000.0) * img_height / RENDER_ZOOM
         x1 = (xmax / 1000.0) * img_width / RENDER_ZOOM
         y1 = (ymax / 1000.0) * img_height / RENDER_ZOOM
-        
-        scaled.append(entity.model_copy(update={"box": (x0, y0, x1, y1)}))
+        scaled.append(entity.model_copy(update={"box": (x0, y0, x1, y1), "name": name}))
     return VlmPage(entities=scaled, scale_text=page.scale_text)
 
 

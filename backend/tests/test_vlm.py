@@ -7,7 +7,8 @@ from pydantic_ai import models
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from planlint.ingest.vlm import detect_page
+from planlint.ingest.vlm import VlmEntity, _resolve_space_name, detect_page
+from planlint.models import AssetType
 
 models.ALLOW_MODEL_REQUESTS = False
 
@@ -103,6 +104,52 @@ async def test_area_in_name_triggers_retry():
     assert calls["n"] == 2
     room = next(e for e in page.entities if e.entity_type.value == "room")
     assert room.name == "GARAGE"
+    assert room.floor_area_m2 == 39.37
+
+
+def _space(entity_type, name, area=None):
+    return VlmEntity(entity_type=entity_type, name=name, floor_area_m2=area, box=(0, 0, 100, 100))
+
+
+@pytest.mark.parametrize(
+    "entity, expected",
+    [
+        (_space(AssetType.ROOM, "1"), None),  # bare callout, no area -> dropped
+        (_space(AssetType.ROOM, "D"), None),  # single-letter callout -> dropped
+        (_space(AssetType.CORRIDOR, "3"), None),
+        (_space(AssetType.ROOM, "A", area=20.0), ""),  # numbered room w/ area: name blanked, kept
+        (_space(AssetType.ROOM, "KITCHEN"), "KITCHEN"),
+        (_space(AssetType.ROOM, "BEDROOM 2"), "BEDROOM 2"),
+        (_space(AssetType.ROOM, "WC"), "WC"),  # a real two-letter room name
+        (_space(AssetType.DOOR, "D1"), "D1"),  # door tags are untouched
+    ],
+)
+def test_resolve_space_name(entity, expected):
+    assert _resolve_space_name(entity) == expected
+
+
+async def test_detect_page_drops_callout_marker_room():
+    # A room-sized box named just "A" with no area is a section-cut callout —
+    # dropped entirely, not kept as an empty-named room.
+    args = {
+        "entities": [{"entity_type": "room", "name": "A", "box": [100, 100, 700, 800]}],
+        "scale_text": None,
+    }
+    page = await detect_page(png_100x80(), FunctionModel(lambda m, i: structured(i, args)))
+    assert page.entities == []
+
+
+async def test_detect_page_keeps_numbered_room_with_area():
+    args = {
+        "entities": [
+            {"entity_type": "room", "name": "1", "floor_area_m2": 39.37,
+             "box": [100, 100, 700, 800]}
+        ],
+        "scale_text": None,
+    }
+    page = await detect_page(png_100x80(), FunctionModel(lambda m, i: structured(i, args)))
+    room = next(e for e in page.entities if e.entity_type.value == "room")
+    assert room.name == ""  # callout name blanked, but the space is kept for its area
     assert room.floor_area_m2 == 39.37
 
 
