@@ -1,0 +1,108 @@
+"use client";
+
+// The selected asset's detail card, pinned atop the right pane: what it is, how
+// trustworthy its geometry is, its measurements, and the clauses that govern it.
+// This is the asset→clause half of the cross-reference — each clause row focuses
+// that clause in the Clauses list.
+
+import {
+  assetDisplayName,
+  assetMeasurements,
+  assetTypeLabel,
+  sourceQuality,
+} from "@/lib/assets";
+import {
+  formatInches,
+  verdictBadgeClass,
+  verdictGlyph,
+  VERDICT_SEVERITY,
+} from "@/lib/verdicts";
+import type { Asset } from "@/lib/types";
+
+interface Props {
+  asset: Asset | null;
+  onFocusClause: (regulationId: string) => void;
+}
+
+export default function AssetInspector({ asset, onFocusClause }: Props) {
+  if (!asset) {
+    return (
+      <div className="border-b border-edge px-4 py-3 text-xs text-ink-dim">
+        Select an asset to see its measurements and governing clauses.
+      </div>
+    );
+  }
+
+  const quality = sourceQuality(asset.source);
+  const measures = assetMeasurements(asset);
+  const clauses = [...asset.verdicts].sort(
+    (a, b) => VERDICT_SEVERITY[a.verdict] - VERDICT_SEVERITY[b.verdict],
+  );
+
+  return (
+    <div className="border-b border-edge px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="font-medium text-ink">{assetDisplayName(asset)}</h3>
+        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
+          {assetTypeLabel(asset.type)}
+        </span>
+        <span
+          className={`rounded px-1.5 py-0.5 text-xs ${
+            quality.confirmed ? "bg-pass/15 text-pass" : "bg-review/15 text-review"
+          }`}
+        >
+          {quality.label}
+        </span>
+      </div>
+
+      {measures.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {measures.map((m) => (
+            <span key={m.label} className="text-ink-dim">
+              {m.label} <span className="font-mono text-ink">{m.value}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {clauses.length > 0 ? (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-medium text-ink-dim">
+            Governing clauses ({clauses.length})
+          </div>
+          <div className="flex flex-col gap-1">
+            {clauses.map((v, i) => (
+              <button
+                key={i}
+                onClick={() => onFocusClause(v.regulation_id)}
+                className="flex items-start gap-2 rounded border border-edge bg-surface-2/40 px-2 py-1.5 text-left text-xs hover:bg-surface-2 focus:outline-2 focus:-outline-offset-2 focus:outline-accent"
+              >
+                <span
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 font-medium ${verdictBadgeClass(v.verdict)}`}
+                  aria-hidden
+                >
+                  {verdictGlyph(v.verdict)}
+                </span>
+                <span className="min-w-0">
+                  <span className="font-mono text-ink">{v.clause_id}</span>
+                  {v.measured != null && (
+                    <span className="ml-1.5 text-ink-dim">
+                      {formatInches(v.measured)} · {v.required}
+                    </span>
+                  )}
+                  {v.reason && (
+                    <span className="mt-0.5 block line-clamp-2 text-ink-dim">{v.reason}</span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-ink-dim">
+          No governing clauses yet — run verification against a codebook.
+        </p>
+      )}
+    </div>
+  );
+}

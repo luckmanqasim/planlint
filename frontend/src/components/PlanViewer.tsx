@@ -8,7 +8,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 
 import { api } from "@/lib/api";
+import CanvasLegend from "@/components/CanvasLegend";
 import { verdictGlyph, verdictColor, worstBoxVerdict } from "@/lib/verdicts";
+import {
+  assetDisplayName,
+  assetPrimaryMeasure,
+  assetTypeCode,
+  isAssetHidden,
+} from "@/lib/assets";
 import type { Asset, Sheet } from "@/lib/types";
 
 const BOX_PAD = 6; // PDF points of breathing room around asset bboxes
@@ -25,6 +32,8 @@ interface Props {
   sheet: Sheet;
   selectedAssetId: string | null;
   onSelectAsset: (asset: Asset | null) => void;
+  hidden: Set<string>; // verdict:/type: keys toggled off in the legend
+  onToggleHidden: (key: string) => void;
 }
 
 function isRenderingCancelled(error: unknown): boolean {
@@ -42,10 +51,11 @@ function boxArea(asset: Asset): number {
 
 /** All assets under a point, smallest first — so nested/overlapping small
  * assets (a door inside a room box) are reachable. */
-function hitsAt(sheet: Sheet, x: number, y: number): Asset[] {
+function hitsAt(sheet: Sheet, x: number, y: number, hidden: Set<string>): Asset[] {
   return sheet.assets
     .filter(
       (asset) =>
+        !isAssetHidden(asset, hidden) &&
         x >= asset.bbox[0] - BOX_PAD &&
         x <= asset.bbox[2] + BOX_PAD &&
         y >= asset.bbox[1] - BOX_PAD &&
@@ -54,7 +64,13 @@ function hitsAt(sheet: Sheet, x: number, y: number): Asset[] {
     .sort((a, b) => boxArea(a) - boxArea(b));
 }
 
-export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Props) {
+export default function PlanViewer({
+  sheet,
+  selectedAssetId,
+  onSelectAsset,
+  hidden,
+  onToggleHidden,
+}: Props) {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -181,6 +197,7 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
 
     const ordered = [...sheet.assets].sort((a, b) => boxArea(b) - boxArea(a));
     for (const asset of ordered) {
+      if (isAssetHidden(asset, hidden)) continue; // toggled off in the legend
       const verdict = worstBoxVerdict(asset.verdicts);
       const color = verdict ? verdictColor(verdict) : UNVERDICTED;
       const [x0, y0, x1, y1] = asset.bbox;
@@ -206,22 +223,19 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
 
+      // Full chip on select/hover/wide; otherwise a tiny type code so every
+      // box still says what it is (fixes blank unnamed boxes). Name falls back
+      // to the type word, and the key measurement rides alongside.
       const showChip = selected || hovered || w >= LABEL_MIN_WIDTH_PX;
-      const area = asset.measurements?.["area_m2"];
-      const text = [
-        verdict ? verdictGlyph(verdict) : "",
-        asset.label,
-        area != null ? `· ${area} m²` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      if (showChip && text) {
+      if (showChip) {
+        const measure = assetPrimaryMeasure(asset);
+        const text =
+          (verdict ? `${verdictGlyph(verdict)} ` : "") +
+          assetDisplayName(asset) +
+          (measure ? ` · ${measure}` : "");
         ctx.font = `${selected || hovered ? "600 " : ""}11px ui-sans-serif, system-ui`;
-        const metrics = ctx.measureText(text);
-        const chipW = metrics.width + 10;
+        const chipW = ctx.measureText(text).width + 10;
         const chipH = 16;
-        // Inside the top-left corner when the box can hold it (rooms),
-        // else floating above (small assets) — fewer cross-box collisions.
         const inside = h > chipH * 2 && w > chipW + 8;
         const chipX = inside ? x + 3 : x;
         const chipY = inside ? y + 3 : Math.max(y - chipH - 2, 0);
@@ -229,9 +243,17 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
         ctx.fillRect(chipX, chipY, chipW, chipH);
         ctx.fillStyle = "#0b0d12"; // --color-surface-0: dark text on the chip
         ctx.fillText(text, chipX + 5, chipY + 12);
+      } else {
+        const code = assetTypeCode(asset.type);
+        ctx.font = "600 9px ui-sans-serif, system-ui";
+        const badgeW = ctx.measureText(code).width + 6;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, badgeW, 13);
+        ctx.fillStyle = "#0b0d12"; // --color-surface-0
+        ctx.fillText(code, x + 3, y + 9.5);
       }
     }
-  }, [sheet.assets, selectedAssetId, hoverId, render]);
+  }, [sheet.assets, selectedAssetId, hoverId, render, hidden]);
 
   const toSheetCoords = useCallback(
     (clientX: number, clientY: number) => {
@@ -307,7 +329,7 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
     }
     const point = toSheetCoords(event.clientX, event.clientY);
     if (!point) return;
-    const top = hitsAt(sheet, point.x, point.y)[0] ?? null;
+    const top = hitsAt(sheet, point.x, point.y, hidden)[0] ?? null;
     setHoverId((prev) => (prev === (top?.id ?? null) ? prev : (top?.id ?? null)));
     if (wrapper) wrapper.style.cursor = top ? "pointer" : "default";
   }
@@ -326,7 +348,7 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
     if (dragRef.current.moved) return; // it was a pan, not a click
     const point = toSheetCoords(event.clientX, event.clientY);
     if (!point) return;
-    const hits = hitsAt(sheet, point.x, point.y);
+    const hits = hitsAt(sheet, point.x, point.y, hidden);
     if (hits.length === 0) {
       onSelectAsset(null);
       return;
@@ -346,6 +368,8 @@ export default function PlanViewer({ sheet, selectedAssetId, onSelectAsset }: Pr
           PDF render failed: {renderError}
         </p>
       )}
+
+      <CanvasLegend assets={sheet.assets} hidden={hidden} onToggle={onToggleHidden} />
 
       {/* Zoom toolbar */}
       <div className="absolute top-5 right-5 z-10 flex items-center gap-1 rounded-lg border border-edge bg-surface-1/90 p-1 backdrop-blur">

@@ -7,6 +7,8 @@
 import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import AssetIndex from "@/components/AssetIndex";
+import AssetInspector from "@/components/AssetInspector";
 import CodePane from "@/components/CodePane";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import PlanViewer from "@/components/PlanViewer";
@@ -15,7 +17,14 @@ import Toasts, { useToasts } from "@/components/Toasts";
 import { api } from "@/lib/api";
 import { useVerificationRun } from "@/lib/useVerificationRun";
 import { verdictGlyph, worstBoxVerdict } from "@/lib/verdicts";
-import type { Asset, Results, Sheet } from "@/lib/types";
+import type { Asset, Results, Sheet, Verdict } from "@/lib/types";
+
+const VERDICT_KEYS = [
+  "verdict:VIOLATES",
+  "verdict:COMPLIES_WITH",
+  "verdict:NEEDS_REVIEW",
+  "verdict:UNCHECKED",
+];
 
 interface Selection {
   sheetId: string;
@@ -32,6 +41,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [error, setError] = useState<string | null>(null);
   const [scaleInput, setScaleInput] = useState("");
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [rightTab, setRightTab] = useState<"clauses" | "assets">("clauses");
+  const [focusClauseId, setFocusClauseId] = useState<string | null>(null);
   const { toasts, push: pushToast } = useToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadKindRef = useRef<"floorplan" | "codebook">("floorplan");
@@ -73,15 +85,23 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     );
   }, [selection, sheets]);
 
-  const violations = useMemo(
-    () =>
-      sheets.flatMap((s) =>
-        s.assets
-          .filter((a) => a.verdicts.some((v) => v.verdict === "VIOLATES"))
-          .map((a) => ({ sheet: s, asset: a })),
-      ),
-    [sheets],
-  );
+  function setSelectedAsset(sheet: Sheet | null, asset: Asset | null) {
+    if (!sheet || !asset) {
+      console.log("[planlint] selected box cleared");
+      setSelection(null);
+      return;
+    }
+    console.log("[planlint] selected box", {
+      sheetId: sheet.id,
+      page: sheet.page_number + 1,
+      assetId: asset.id,
+      label: asset.label,
+      type: asset.type,
+      bbox: asset.bbox,
+      verdicts: asset.verdicts,
+    });
+    setSelection({ sheetId: sheet.id, assetId: asset.id });
+  }
 
   const summary = useMemo(() => {
     const counts = { VIOLATES: 0, COMPLIES_WITH: 0, NEEDS_REVIEW: 0 };
@@ -100,13 +120,24 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   }
 
   function selectOnCurrentSheet(asset: Asset | null) {
-    if (!sheet) return;
-    setSelection(asset ? { sheetId: sheet.id, assetId: asset.id } : null);
+    setSelectedAsset(sheet, asset);
   }
 
-  function jumpToViolation(target: Sheet, asset: Asset) {
-    setSheetIndex(sheets.indexOf(target));
-    setSelection({ sheetId: target.id, assetId: asset.id });
+  const toggleHidden = useCallback((key: string) => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Summary chip → show only this verdict (hide the others); click again clears.
+  function onlyVerdict(v: Verdict) {
+    const keep = `verdict:${v}`;
+    const others = VERDICT_KEYS.filter((k) => k !== keep);
+    const alreadyOnly = others.every((k) => hidden.has(k)) && !hidden.has(keep);
+    setHidden(alreadyOnly ? new Set() : new Set(others));
   }
 
   function onSheetKeys(event: React.KeyboardEvent) {
@@ -188,20 +219,32 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </nav>
         <div className="flex-1" />
         {summary.VIOLATES > 0 && (
-          <span className="rounded-full bg-fail/15 px-2.5 py-1 text-xs font-medium text-fail">
+          <button
+            onClick={() => onlyVerdict("VIOLATES")}
+            title="Show only violations"
+            className="rounded-full bg-fail/15 px-2.5 py-1 text-xs font-medium text-fail hover:bg-fail/25"
+          >
             {verdictGlyph("VIOLATES")} {summary.VIOLATES} violation
             {summary.VIOLATES === 1 ? "" : "s"}
-          </span>
+          </button>
         )}
         {summary.COMPLIES_WITH > 0 && (
-          <span className="rounded-full bg-pass/15 px-2.5 py-1 text-xs font-medium text-pass">
+          <button
+            onClick={() => onlyVerdict("COMPLIES_WITH")}
+            title="Show only passes"
+            className="rounded-full bg-pass/15 px-2.5 py-1 text-xs font-medium text-pass hover:bg-pass/25"
+          >
             {verdictGlyph("COMPLIES_WITH")} {summary.COMPLIES_WITH} pass
-          </span>
+          </button>
         )}
         {summary.NEEDS_REVIEW > 0 && (
-          <span className="rounded-full bg-review/15 px-2.5 py-1 text-xs font-medium text-review">
+          <button
+            onClick={() => onlyVerdict("NEEDS_REVIEW")}
+            title="Show only needs-review"
+            className="rounded-full bg-review/15 px-2.5 py-1 text-xs font-medium text-review hover:bg-review/25"
+          >
             {verdictGlyph("NEEDS_REVIEW")} {summary.NEEDS_REVIEW} review
-          </span>
+          </button>
         )}
         <button
           onClick={() => pickFile("floorplan")}
@@ -341,6 +384,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               sheet={sheet}
               selectedAssetId={selectedAsset?.id ?? null}
               onSelectAsset={selectOnCurrentSheet}
+              hidden={hidden}
+              onToggleHidden={toggleHidden}
             />
           ) : documents.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8">
@@ -378,58 +423,58 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             </p>
           )}
 
-          {violations.length > 0 && (
-            <section className="px-4 pb-4">
-              <h3 className="sticky top-0 bg-surface-1 py-2 font-medium">
-                Violations ({violations.length})
-              </h3>
-              <div className="flex flex-col gap-2">
-                {violations.map(({ sheet: s, asset }) => {
-                  const violation = asset.verdicts.find((v) => v.verdict === "VIOLATES");
-                  if (!violation) return null;
-                  return (
-                    <button
-                      key={asset.id}
-                      onClick={() => jumpToViolation(s, asset)}
-                      className={`rounded-lg border p-3 text-left hover:bg-surface-2 focus:outline-2 focus:outline-accent ${
-                        selectedAsset?.id === asset.id
-                          ? "border-fail bg-fail/10"
-                          : "border-edge bg-surface-2/40"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span aria-hidden className="font-semibold text-fail">
-                          ✕
-                        </span>
-                        <span className="font-medium">{asset.label || asset.id}</span>
-                        <span className="rounded bg-fail/15 px-1.5 py-0.5 text-xs text-fail">
-                          {violation.clause_id}
-                        </span>
-                        {s.id !== sheet?.id && (
-                          <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
-                            Sheet {s.page_number + 1}
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-ink-dim">
-                        {violation.reason}
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          )}
         </div>
 
-        <div className="overflow-y-auto bg-surface-1">
-          <CodePane
-            clauses={results?.clauses ?? []}
-            documents={documents}
-            sheet={sheet}
-            selectedAsset={selectedAsset}
-            onSelectAsset={selectOnCurrentSheet}
-          />
+        <div className="flex min-h-0 flex-col overflow-hidden bg-surface-1">
+          <div className="max-h-[45%] shrink-0 overflow-y-auto">
+            <AssetInspector
+              asset={selectedAsset}
+              onFocusClause={(regId) => {
+                setRightTab("clauses");
+                setFocusClauseId(regId);
+              }}
+            />
+          </div>
+          <div
+            role="tablist"
+            aria-label="Review views"
+            className="flex shrink-0 gap-1 border-b border-edge px-3 py-2"
+          >
+            {(["clauses", "assets"] as const).map((tab) => (
+              <button
+                key={tab}
+                role="tab"
+                aria-selected={rightTab === tab}
+                onClick={() => setRightTab(tab)}
+                className={`rounded-lg px-3 py-1 text-xs capitalize ${
+                  rightTab === tab
+                    ? "bg-surface-2 font-medium text-ink"
+                    : "text-ink-dim hover:bg-surface-2/60 hover:text-ink"
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {rightTab === "clauses" ? (
+              <CodePane
+                clauses={results?.clauses ?? []}
+                documents={documents}
+                sheet={sheet}
+                selectedAsset={selectedAsset}
+                onSelectAsset={selectOnCurrentSheet}
+                focusClauseId={focusClauseId}
+              />
+            ) : (
+              <AssetIndex
+                assets={sheet?.assets ?? []}
+                hidden={hidden}
+                selectedAssetId={selectedAsset?.id ?? null}
+                onSelect={selectOnCurrentSheet}
+              />
+            )}
+          </div>
         </div>
       </div>
 

@@ -65,3 +65,29 @@ export function worstBoxVerdict(verdicts: { verdict: Verdict }[]): Verdict | nul
 export function formatInches(value: number): string {
   return `${value}″`;
 }
+
+/** Pill styling for a verdict badge — shared so every pane's badge matches. */
+export function verdictBadgeClass(verdict: Verdict): string {
+  return verdict === "VIOLATES"
+    ? "bg-fail/15 text-fail"
+    : verdict === "COMPLIES_WITH"
+      ? "bg-pass/15 text-pass"
+      : "bg-review/15 text-review";
+}
+
+/** Left-border + tint for a verdict-annotated card. */
+export function verdictCardClass(verdict: Verdict): string {
+  return verdict === "VIOLATES"
+    ? "border-l-fail bg-fail/10"
+    : verdict === "COMPLIES_WITH"
+      ? "border-l-pass bg-pass/10"
+      : "border-l-review bg-review/10";
+}
+
+/** Whether the browser reports a reduced-motion preference (client-only). */
+export function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}

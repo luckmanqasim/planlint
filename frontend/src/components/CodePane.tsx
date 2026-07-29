@@ -6,7 +6,15 @@
 
 import { useEffect, useMemo, useRef } from "react";
 
-import { formatInches, verdictGlyph, verdictLabel, VERDICT_SEVERITY } from "@/lib/verdicts";
+import {
+  formatInches,
+  prefersReducedMotion,
+  verdictBadgeClass,
+  verdictCardClass,
+  verdictGlyph,
+  verdictLabel,
+  VERDICT_SEVERITY,
+} from "@/lib/verdicts";
 import type { Asset, Clause, Doc, Sheet, VerdictEdge } from "@/lib/types";
 
 interface Props {
@@ -15,19 +23,8 @@ interface Props {
   sheet: Sheet | null;
   selectedAsset: Asset | null;
   onSelectAsset: (asset: Asset | null) => void;
+  focusClauseId?: string | null; // scroll target set by the inspector
 }
-
-const VERDICT_CARD: Record<VerdictEdge["verdict"], string> = {
-  VIOLATES: "border-l-fail bg-fail/10",
-  COMPLIES_WITH: "border-l-pass bg-pass/10",
-  NEEDS_REVIEW: "border-l-review bg-review/10",
-};
-
-const VERDICT_BADGE: Record<VerdictEdge["verdict"], string> = {
-  VIOLATES: "bg-fail/15 text-fail",
-  COMPLIES_WITH: "bg-pass/15 text-pass",
-  NEEDS_REVIEW: "bg-review/15 text-review",
-};
 
 /**
  * The semantic pane: the codebook's clause list (grouped per codebook when
@@ -42,6 +39,7 @@ export default function CodePane({
   sheet,
   selectedAsset,
   onSelectAsset,
+  focusClauseId,
 }: Props) {
   const refs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -90,11 +88,20 @@ export default function CodePane({
     const target = ranked[0];
     if (target) {
       refs.current[target.regulation_id]?.scrollIntoView({
-        behavior: "smooth",
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
         block: "center",
       });
     }
   }, [selectedAsset]);
+
+  // Scroll to a clause the inspector focused (asset → clause cross-reference).
+  useEffect(() => {
+    if (!focusClauseId) return;
+    refs.current[focusClauseId]?.scrollIntoView({
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+      block: "center",
+    });
+  }, [focusClauseId]);
 
   if (clauses.length === 0) {
     return (
@@ -141,13 +148,13 @@ export default function CodePane({
                 }
                 className={`border-b border-edge px-4 py-3 scroll-mt-10 [content-visibility:auto] [contain-intrinsic-size:auto_120px] ${
                   verdict
-                    ? `border-l-2 ${VERDICT_CARD[verdict.verdict]}`
+                    ? `border-l-2 ${verdictCardClass(verdict.verdict)}`
                     : "border-l-2 border-l-transparent"
                 } ${clickable ? "cursor-pointer hover:bg-surface-2 focus:outline-2 focus:-outline-offset-2 focus:outline-accent" : ""}`}
               >
                 <div className="flex items-baseline justify-between gap-2">
                   <h4 className="font-medium">
-                    {clause.clause_id} {clause.title}
+                    <span className="font-mono">{clause.clause_id}</span> {clause.title}
                   </h4>
                   {!verdict && governed && (
                     <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
@@ -162,13 +169,14 @@ export default function CodePane({
                 {verdict && (
                   <div className="mt-2.5">
                     <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${VERDICT_BADGE[verdict.verdict]}`}
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${verdictBadgeClass(verdict.verdict)}`}
                     >
                       {verdictGlyph(verdict.verdict)} {verdictLabel(verdict.verdict)}
                     </span>
                     {verdict.measured != null && (
                       <span className="ml-2 text-xs text-ink-dim">
-                        measured {formatInches(verdict.measured)} · required {verdict.required}
+                        measured <span className="font-mono">{formatInches(verdict.measured)}</span>{" "}
+                        · required <span className="font-mono">{verdict.required}</span>
                       </span>
                     )}
                     {verdict.reason && (
