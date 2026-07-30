@@ -9,6 +9,7 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import AssetIndex from "@/components/AssetIndex";
 import AssetInspector from "@/components/AssetInspector";
+import CodebookModal, { type CodebookView } from "@/components/CodebookModal";
 import CodePane from "@/components/CodePane";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import PlanViewer from "@/components/PlanViewer";
@@ -44,6 +45,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [rightTab, setRightTab] = useState<"clauses" | "assets">("clauses");
   const [focusClauseId, setFocusClauseId] = useState<string | null>(null);
+  const [codebookView, setCodebookView] = useState<CodebookView | null>(null);
   const { toasts, push: pushToast } = useToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadKindRef = useRef<"floorplan" | "codebook">("floorplan");
@@ -433,6 +435,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 setRightTab("clauses");
                 setFocusClauseId(regId);
               }}
+              onViewClause={setCodebookView}
             />
           </div>
           <div
@@ -465,6 +468,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 selectedAsset={selectedAsset}
                 onSelectAsset={selectOnCurrentSheet}
                 focusClauseId={focusClauseId}
+                onViewClause={setCodebookView}
               />
             ) : (
               <AssetIndex
@@ -479,6 +483,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       </div>
 
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      <CodebookModal view={codebookView} onClose={() => setCodebookView(null)} />
       <Toasts toasts={toasts} />
     </main>
   );

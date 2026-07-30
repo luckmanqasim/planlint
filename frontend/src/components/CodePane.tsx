@@ -15,6 +15,7 @@ import {
   verdictLabel,
   VERDICT_SEVERITY,
 } from "@/lib/verdicts";
+import type { CodebookView } from "@/components/CodebookModal";
 import type { Asset, Clause, Doc, Sheet, VerdictEdge } from "@/lib/types";
 
 interface Props {
@@ -24,6 +25,7 @@ interface Props {
   selectedAsset: Asset | null;
   onSelectAsset: (asset: Asset | null) => void;
   focusClauseId?: string | null; // scroll target set by the inspector
+  onViewClause?: (view: CodebookView) => void;
 }
 
 /**
@@ -40,6 +42,7 @@ export default function CodePane({
   selectedAsset,
   onSelectAsset,
   focusClauseId,
+  onViewClause,
 }: Props) {
   const refs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -156,11 +159,30 @@ export default function CodePane({
                   <h4 className="font-medium">
                     <span className="font-mono">{clause.clause_id}</span> {clause.title}
                   </h4>
-                  {!verdict && governed && (
-                    <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
-                      → {governed.asset.label || governed.asset.id}
-                    </span>
-                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {!verdict && governed && (
+                      <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
+                        → {governed.asset.label || governed.asset.id}
+                      </span>
+                    )}
+                    {onViewClause && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onViewClause({
+                            documentId: clause.document_id,
+                            page: clause.page,
+                            bbox: clause.bbox,
+                          });
+                        }}
+                        title="View in codebook"
+                        aria-label="View in codebook"
+                        className="rounded px-1 text-ink-dim hover:bg-surface-2 hover:text-ink"
+                      >
+                        ⧉
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {clause.hierarchy_path && (
                   <div className="mt-0.5 text-xs text-ink-dim">{clause.hierarchy_path}</div>

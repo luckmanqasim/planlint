@@ -17,14 +17,16 @@ import {
   verdictGlyph,
   VERDICT_SEVERITY,
 } from "@/lib/verdicts";
+import type { CodebookView } from "@/components/CodebookModal";
 import type { Asset } from "@/lib/types";
 
 interface Props {
   asset: Asset | null;
   onFocusClause: (regulationId: string) => void;
+  onViewClause?: (view: CodebookView) => void;
 }
 
-export default function AssetInspector({ asset, onFocusClause }: Props) {
+export default function AssetInspector({ asset, onFocusClause, onViewClause }: Props) {
   if (!asset) {
     return (
       <div className="border-b border-edge px-4 py-3 text-xs text-ink-dim">
@@ -72,29 +74,46 @@ export default function AssetInspector({ asset, onFocusClause }: Props) {
           </div>
           <div className="flex flex-col gap-1">
             {clauses.map((v, i) => (
-              <button
-                key={i}
-                onClick={() => onFocusClause(v.regulation_id)}
-                className="flex items-start gap-2 rounded border border-edge bg-surface-2/40 px-2 py-1.5 text-left text-xs hover:bg-surface-2 focus:outline-2 focus:-outline-offset-2 focus:outline-accent"
-              >
-                <span
-                  className={`shrink-0 rounded-full px-1.5 py-0.5 font-medium ${verdictBadgeClass(v.verdict)}`}
-                  aria-hidden
+              <div key={i} className="flex items-stretch gap-1">
+                <button
+                  onClick={() => onFocusClause(v.regulation_id)}
+                  className="flex flex-1 items-start gap-2 rounded border border-edge bg-surface-2/40 px-2 py-1.5 text-left text-xs hover:bg-surface-2 focus:outline-2 focus:-outline-offset-2 focus:outline-accent"
                 >
-                  {verdictGlyph(v.verdict)}
-                </span>
-                <span className="min-w-0">
-                  <span className="font-mono text-ink">{v.clause_id}</span>
-                  {v.measured != null && (
-                    <span className="ml-1.5 text-ink-dim">
-                      {formatInches(v.measured)} · {v.required}
-                    </span>
-                  )}
-                  {v.reason && (
-                    <span className="mt-0.5 block line-clamp-2 text-ink-dim">{v.reason}</span>
-                  )}
-                </span>
-              </button>
+                  <span
+                    className={`shrink-0 rounded-full px-1.5 py-0.5 font-medium ${verdictBadgeClass(v.verdict)}`}
+                    aria-hidden
+                  >
+                    {verdictGlyph(v.verdict)}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="font-mono text-ink">{v.clause_id}</span>
+                    {v.measured != null && (
+                      <span className="ml-1.5 text-ink-dim">
+                        {formatInches(v.measured)} · {v.required}
+                      </span>
+                    )}
+                    {v.reason && (
+                      <span className="mt-0.5 block line-clamp-2 text-ink-dim">{v.reason}</span>
+                    )}
+                  </span>
+                </button>
+                {onViewClause && (
+                  <button
+                    onClick={() =>
+                      onViewClause({
+                        documentId: v.clause_document_id,
+                        page: v.clause_page,
+                        bbox: v.clause_bbox,
+                      })
+                    }
+                    title="View in codebook"
+                    aria-label="View in codebook"
+                    className="shrink-0 rounded border border-edge bg-surface-2/40 px-1.5 text-xs text-ink-dim hover:bg-surface-2 hover:text-ink"
+                  >
+                    ⧉
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>
