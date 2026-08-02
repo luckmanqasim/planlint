@@ -19,6 +19,7 @@ from planlint.config import settings
 from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
+from planlint.ingest.ocr import ocr_boxes
 from planlint.ingest.schedule import parse_schedule
 from planlint.ingest.sheet_type import SheetType, classify_sheet
 from planlint.ingest.vector_geometry import classify_opening_vector
@@ -48,8 +49,6 @@ _SKIP_SHEET_TYPES = frozenset(
 
 _ELEVATION_TYPES = frozenset({SheetType.ELEVATION, SheetType.SECTION})
 
-_ocr_engine = None  # lazy singleton; model load is expensive
-
 
 async def _noop_emit(_: RunEvent) -> None:
     return None
@@ -68,37 +67,16 @@ def _analyze_page(page) -> tuple[str, list, list, bytes | None]:
 
 
 def _ocr_labels(png: bytes) -> list[geometry.TextLabel]:
-    """Text printed on a scanned page, via RapidOCR when installed (it ships
-    with the docling extra). Feeds the same label-based measurement path the
-    vector pipeline uses; dimension strings the parser can't read are simply
-    ignored downstream."""
-    global _ocr_engine
-    try:
-        if _ocr_engine is None:
-            from rapidocr import RapidOCR  # lazy: heavy import
-
-            _ocr_engine = RapidOCR()
-    except Exception:
-        return []
-    try:
-        import cv2
-        import numpy as np
-
-        image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-        result = _ocr_engine(image)
-    except Exception:
-        return []
-    boxes = getattr(result, "boxes", None)
-    texts = getattr(result, "txts", None)
-    if boxes is None or texts is None:
-        return []
+    """Text printed on a scanned page, via the shared RapidOCR engine. Feeds the
+    same label-based measurement path the vector pipeline uses; dimension strings
+    the parser can't read are simply ignored downstream."""
     labels: list[geometry.TextLabel] = []
-    for quad, text in zip(boxes, texts):
+    for quad, text in ocr_boxes(png):
         xs = [float(p[0]) for p in quad]
         ys = [float(p[1]) for p in quad]
         labels.append(
             geometry.TextLabel(
-                text=str(text),
+                text=text,
                 bbox=(
                     min(xs) / RENDER_ZOOM,
                     min(ys) / RENDER_ZOOM,
