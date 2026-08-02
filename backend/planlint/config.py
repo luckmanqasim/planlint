@@ -26,8 +26,12 @@ class Settings(BaseSettings):
     planlint_vision_model: str = "google:gemini-3-flash-preview"
     planlint_text_model: str = "google:gemini-3-flash-preview"
 
-    # auto = use Docling when installed, else the built-in simple text parser
-    planlint_semantic_parser: str = "auto"  # auto | docling | simple
+    # auto = LLM-first: the vision model transcribes each page when a vision API
+    # key is set (clean text pages skip the VLM; cost is one-time — the graph
+    # caches clauses), else Docling when installed, else the simple text parser.
+    # llm forces the transcriber; docling/simple force those. See
+    # resolve_parser_mode in ingest/semantic.py.
+    planlint_semantic_parser: str = "auto"  # auto | docling | simple | llm
 
     planlint_data_dir: Path = _REPO_ROOT / "data"
     planlint_samples_dir: Path = _REPO_ROOT / "samples"

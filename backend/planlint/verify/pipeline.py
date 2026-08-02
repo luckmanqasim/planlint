@@ -10,7 +10,7 @@ from typing import Awaitable, Callable
 
 from planlint.config import settings
 from planlint.ingest.llm_parser import parse_codebook_llm
-from planlint.ingest.semantic import parse_codebook_isolated
+from planlint.ingest.semantic import parse_codebook_isolated, resolve_parser_mode
 from planlint.ingest.spatial import ingest_floorplan
 from planlint.models import (
     CheckResult,
@@ -57,13 +57,13 @@ async def ingest_pending_documents(
         path = Path(document["path"])
         if document["kind"] == "codebook":
             await emit(RunEvent(stage="ingest:semantic", message=f"Parsing {document['filename']}"))
-            parser_mode = settings.planlint_semantic_parser
-            if parser_mode == "llm" and settings.planlint_fake_llm:
-                parser_mode = "simple"  # fake-LLM mode never makes model calls
+            parser_mode = resolve_parser_mode(
+                settings.planlint_semantic_parser, vision_model
+            )
             if parser_mode == "llm":
-                # Already-async per-page vision transcription, verified
-                # against the text layer inside the parser.
-                clauses, unverified = await parse_codebook_llm(path, vision_model)
+                # Already-async per-page vision transcription (router: clean text
+                # pages skip the VLM), verified against the text layer / OCR.
+                clauses, unverified, failed = await parse_codebook_llm(path, vision_model)
                 if unverified:
                     await emit(
                         RunEvent(
@@ -72,6 +72,16 @@ async def ingest_pending_documents(
                             "have no text layer — transcription could not be "
                             "cross-checked",
                             level="warning",
+                        )
+                    )
+                if failed:
+                    await emit(
+                        RunEvent(
+                            stage="ingest:semantic",
+                            message=f"{document['filename']}: page(s) "
+                            f"{', '.join(str(p + 1) for p in failed)} failed "
+                            "verification — rebuilt from the PDF text layer",
+                            level="error",
                         )
                     )
             else:

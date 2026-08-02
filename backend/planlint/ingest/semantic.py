@@ -13,6 +13,7 @@ Two parser backends feed the same clause-tree builder:
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -176,6 +177,35 @@ def _docling_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+# Provider env vars that indicate a vision model can be called. Presence only —
+# the value is never read or logged (it's an API key).
+_PROVIDER_KEYS = {
+    "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+}
+
+
+def _has_vision_api_key(model: str) -> bool:
+    provider = model.split(":", 1)[0]
+    return any(os.environ.get(key) for key in _PROVIDER_KEYS.get(provider, ()))
+
+
+def resolve_parser_mode(configured: str, vision_model: str) -> str:
+    """Resolve `auto` to a concrete backend. LLM-first: `auto` picks the LLM
+    parser when a vision API key is configured (its per-document cost is one-time
+    — the graph caches clauses), else Docling when installed, else the simple
+    text parser. Explicit modes pass through; PLANLINT_FAKE_LLM forces `simple`
+    so offline/CI never makes a model call."""
+    if settings.planlint_fake_llm:
+        return "simple" if configured in ("auto", "llm") else configured
+    if configured != "auto":
+        return configured
+    if _has_vision_api_key(vision_model):
+        return "llm"
+    return "docling" if _docling_available() else "simple"
 
 
 def _clauses_from_items(items: list[StructuredItem]) -> list[RegulationClause]:
