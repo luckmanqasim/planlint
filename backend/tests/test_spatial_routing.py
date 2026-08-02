@@ -184,6 +184,41 @@ async def test_bare_vlm_guess_is_dropped(tmp_path, fake_repo, monkeypatch):
     assets = await _ingest_entity(pdf, fake_repo, monkeypatch, entity)
     assert assets == []
 
+
+async def test_snapped_opening_prefers_printed_dimension(tmp_path, fake_repo, monkeypatch):
+    # A printed dimension label near the opening (3'-0" = 36") wins over the
+    # geometric gap width (36pt × 48/72 = 24").
+    pdf = tmp_path / "plan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.draw_line((200, 300), (350, 300))
+    page.draw_line((386, 300), (520, 300))  # 36pt gap at 350..386
+    page.insert_text((352, 297), "3'-0\"", fontsize=8)  # dimension inside the gap
+    doc.save(str(pdf))
+    doc.close()
+
+    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
+
+    async def fake_detect(png, model):
+        return VlmPage(
+            entities=[VlmEntity(entity_type=AssetType.WINDOW, name="", box=(345, 292, 391, 308))],
+            scale_text='SCALE: 1/4" = 1\'-0"',
+        )
+
+    monkeypatch.setattr(spatial, "detect_page", fake_detect)
+    row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
+           "filename": "plan.pdf", "path": str(pdf), "ingested": False}
+    fake_repo.documents["doc-1"] = row
+
+    async def emit(event):
+        return None
+
+    await spatial.ingest_floorplan(pdf, row, fake_repo, model=None, emit=emit)
+    window = next(a for a in fake_repo.assets.values() if a["type"] == "window")
+    assert window["measurements"]["clear_width"] == 36.0  # the label, not the 24" gap
+
+
 async def test_ramp_slope_read_from_label(tmp_path, fake_repo, monkeypatch):
     pdf = tmp_path / "plan.pdf"
     doc = pymupdf.open()

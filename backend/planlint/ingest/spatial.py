@@ -311,14 +311,17 @@ async def ingest_floorplan(
                     bbox, source, confidence = entity.box, "vlm-only", 0.6
                 measured = geometry.measure_asset(bbox, primitives, labels, scale)
                 measurements = {}
+                label_clear_width = False
                 if measured is not None:
                     measurements, from_label = measured
                     if not from_label:
                         confidence = min(confidence, 0.6)  # geometry heuristic
+                    label_clear_width = from_label and Parameter.CLEAR_WIDTH in measurements
                 if (
                     opening_result is not None
                     and opening_result.kind == "snapped"
                     and scale is not None
+                    and not label_clear_width  # a printed dimension wins over the gap
                 ):
                     measurements[Parameter.CLEAR_WIDTH] = round(opening_result.width_pt * scale, 1)
                 if (
