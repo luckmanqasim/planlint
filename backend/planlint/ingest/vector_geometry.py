@@ -139,6 +139,28 @@ def parse_dimension_label(text: str) -> float | None:
     return None
 
 
+# Slope annotations: '1:12', '1 in 12', '8.3%'. Bare '/' is excluded so drawing
+# scales ('1/4"') aren't misread as slopes.
+_SLOPE_RATIO = re.compile(r"(\d+(?:\.\d+)?)\s*(?::|\s+in\s+)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+_SLOPE_PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def parse_slope_label(text: str) -> float | None:
+    """Grade fraction (rise/run) from a slope annotation: '1:12'/'1 in 12'/'8.3%'
+    → 0.083. Orientation-agnostic: a value > 1 is read as run:rise and inverted,
+    since a ramp is never steeper than 1:1."""
+    m = _SLOPE_PERCENT.search(text)
+    if m:
+        return float(m.group(1)) / 100.0
+    m = _SLOPE_RATIO.search(text)
+    if m:
+        a, b = float(m.group(1)), float(m.group(2))
+        if a > 0 and b > 0:
+            grade = a / b
+            return grade if grade <= 1 else b / a
+    return None
+
+
 # ------------------------------------------------------------------ snapping
 
 def _inflate(box: BBox, by: float) -> BBox:

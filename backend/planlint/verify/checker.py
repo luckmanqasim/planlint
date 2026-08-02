@@ -92,6 +92,9 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
     if constraint.parameter == Parameter.AREA:
         return _check_area(asset, constraint)
 
+    if constraint.parameter == Parameter.SLOPE:
+        return _check_slope(asset, constraint)
+
     required_in = to_inches(constraint.value, constraint.unit)
     if required_in is None:
         return _review(f"Unknown unit '{constraint.unit}'")
@@ -212,6 +215,54 @@ def _check_area(asset: PhysicalAsset, constraint: Constraint) -> CheckResult:
     return CheckResult(
         verdict=VerdictType.COMPLIES_WITH if ok else VerdictType.VIOLATES,
         measured=measured,
+        required=required_str,
+        reason=reason,
+    )
+
+
+def _slope_str(grade: float) -> str:
+    """Grade fraction (rise/run) as a drawing-style ratio: 0.083 -> '1:12'."""
+    return f"1:{round(1 / grade)}" if grade > 0 else "flat"
+
+
+def _check_slope(asset: PhysicalAsset, constraint: Constraint) -> CheckResult:
+    """Slope comparison — measured and constraint are grade fractions (rise/run),
+    dimensionless, so no unit conversion. `measured` is left off the result to
+    keep the inches-formatting UI honest; the reason carries the ratio."""
+    assert constraint.value is not None
+    measured = asset.measurements.get(Parameter.SLOPE)
+    if measured is None:
+        return _review("Asset has no 'slope' measurement")
+    required = constraint.value
+
+    if constraint.operator == Operator.MAX:
+        required_str = f"<= {_slope_str(required)}"
+        ok = measured <= required
+        reason = (
+            f"slope is {_slope_str(measured)}; code allows {required_str}"
+            if ok
+            else f"slope is {_slope_str(measured)}, steeper than the {_slope_str(required)} maximum"
+        )
+    elif constraint.operator == Operator.MIN:
+        required_str = f">= {_slope_str(required)}"
+        ok = measured >= required
+        reason = (
+            f"slope is {_slope_str(measured)}; code requires {required_str}"
+            if ok
+            else f"slope is {_slope_str(measured)}, shallower than {_slope_str(required)}"
+        )
+    elif constraint.operator == Operator.RANGE:
+        if constraint.value_high is None:
+            return _review("Range constraint is missing its upper bound")
+        required_str = f"{_slope_str(required)}..{_slope_str(constraint.value_high)}"
+        ok = required <= measured <= constraint.value_high
+        reason = f"slope is {_slope_str(measured)}, {'within' if ok else 'outside'} {required_str}"
+    else:
+        return _review(f"Unsupported operator '{constraint.operator.value}'")
+
+    return CheckResult(
+        verdict=VerdictType.COMPLIES_WITH if ok else VerdictType.VIOLATES,
+        measured=None,
         required=required_str,
         reason=reason,
     )

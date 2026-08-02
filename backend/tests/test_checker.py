@@ -280,3 +280,43 @@ def test_area_without_measurement_needs_review():
     result = check(area_asset(area=None), area_constraint())
     assert result.verdict == VerdictType.NEEDS_REVIEW
     assert "area_m2" in result.reason
+
+
+# -------------------------------------------------------------------- slope
+
+
+def ramp_asset(grade: float | None = 0.083) -> PhysicalAsset:
+    measurements = {} if grade is None else {Parameter.SLOPE: grade}
+    return make_asset(type_=AssetType.RAMP, measurements=measurements)
+
+
+def slope_constraint(operator=Operator.MAX, value=0.083, value_high=None) -> Constraint:
+    return make_constraint(
+        operator=operator, value=value, value_high=value_high, unit="ratio",
+        applies_to=AssetType.RAMP, parameter=Parameter.SLOPE,
+    )
+
+
+def test_slope_max_complies():
+    # a 1:15 ramp (0.067) is flatter than the 1:12 maximum (0.083)
+    result = check(ramp_asset(0.067), slope_constraint(value=0.083))
+    assert result.verdict == VerdictType.COMPLIES_WITH
+    assert result.required == "<= 1:12"
+
+
+def test_slope_max_violates():
+    # a 1:10 ramp (0.1) is steeper than the 1:12 maximum
+    result = check(ramp_asset(0.1), slope_constraint(value=0.083))
+    assert result.verdict == VerdictType.VIOLATES
+    assert "1:10" in result.reason and "1:12" in result.reason
+
+
+def test_slope_max_boundary_complies():
+    result = check(ramp_asset(0.083), slope_constraint(value=0.083))
+    assert result.verdict == VerdictType.COMPLIES_WITH
+
+
+def test_slope_without_measurement_needs_review():
+    result = check(ramp_asset(grade=None), slope_constraint())
+    assert result.verdict == VerdictType.NEEDS_REVIEW
+    assert "slope" in result.reason.lower()

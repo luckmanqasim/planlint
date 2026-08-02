@@ -27,6 +27,9 @@ PLAUSIBLE_RANGES: dict[Parameter, tuple[float, float]] = {
     Parameter.LANDING_LENGTH: (12.0, 240.0),
 }
 
+# Slope is a grade fraction (rise/run), not a length — checked on the raw value.
+SLOPE_RANGE = (0.01, 0.5)  # 1:100 (nearly flat) to 1:2 (very steep)
+
 _ALLOWED_LENGTH_UNITS = {"in", "inch", "inches", "ft", "feet", "mm", "cm", "m", "ratio"}
 _ALLOWED_AREA_UNITS = {"m²", "m2", "sqm", "sq m", "ft²", "ft2", "sqft", "sq ft"}
 _ALLOWED_UNITS = _ALLOWED_LENGTH_UNITS | _ALLOWED_AREA_UNITS
@@ -67,6 +70,9 @@ Rules:
   when the clause constrains the floor area of a room or space itself.
   Constraints about lots, parcels, sites, yards, frontages, or setbacks govern
   the site — no listed asset type matches them, so emit nothing for those.
+- Slope/grade (ramps): use parameter "slope", unit "ratio", operator "max", and
+  express value as the maximum rise-over-run as a DECIMAL fraction — "1:12" is
+  0.083, "8.33%" is 0.083, "1:20" is 0.05.
 - extraction_confidence: your confidence the constraint faithfully represents
   the clause (1.0 = verbatim numeric requirement).
 - summary: one sentence restating the requirement in plain language.
@@ -119,6 +125,14 @@ def build_extractor_agent(model) -> Agent:
                             "is implausible for a room. Re-read the clause."
                         )
                         continue
+                if draft.parameter == Parameter.SLOPE:
+                    if not (SLOPE_RANGE[0] <= draft.value <= SLOPE_RANGE[1]):
+                        problems.append(
+                            f"{where}: slope {draft.value} is outside "
+                            f"{SLOPE_RANGE[0]}–{SLOPE_RANGE[1]} (rise/run). Express it "
+                            "as a decimal fraction, e.g. 1:12 = 0.083."
+                        )
+                    continue
                 plausible = PLAUSIBLE_RANGES.get(draft.parameter)
                 if plausible and draft.unit.lower() != "ratio":
                     inches = to_inches(draft.value, draft.unit)

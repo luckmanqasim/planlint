@@ -184,6 +184,35 @@ async def test_bare_vlm_guess_is_dropped(tmp_path, fake_repo, monkeypatch):
     assets = await _ingest_entity(pdf, fake_repo, monkeypatch, entity)
     assert assets == []
 
+async def test_ramp_slope_read_from_label(tmp_path, fake_repo, monkeypatch):
+    pdf = tmp_path / "plan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((110, 230), "SLOPE 1:12", fontsize=8)  # slope annotation on the ramp
+    doc.save(str(pdf))
+    doc.close()
+
+    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
+
+    async def fake_detect(png, model):
+        return VlmPage(
+            entities=[VlmEntity(entity_type=AssetType.RAMP, name="RAMP", box=(100, 200, 220, 260))],
+            scale_text=None,
+        )
+
+    monkeypatch.setattr(spatial, "detect_page", fake_detect)
+    row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
+           "filename": "plan.pdf", "path": str(pdf), "ingested": False}
+    fake_repo.documents["doc-1"] = row
+
+    async def emit(event):
+        return None
+
+    await spatial.ingest_floorplan(pdf, row, fake_repo, model=None, emit=emit)
+    ramp = next(a for a in fake_repo.assets.values() if a["type"] == "ramp")
+    assert ramp["measurements"]["slope"] == pytest.approx(0.083, abs=0.001)
+
 
 async def test_snapped_door_without_name_or_measurement_is_kept(tmp_path, fake_repo, monkeypatch):
     # A door in a real wall gap snaps (vector-snapped) and is kept even without a

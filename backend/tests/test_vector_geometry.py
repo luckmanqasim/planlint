@@ -72,6 +72,19 @@ def test_dimension_embedded_in_door_tag():
     assert parse_dimension_label('D1 36"') == 36.0
 
 
+# ------------------------------------------------------------- parse_slope_label
+
+def test_parse_slope_label():
+    from planlint.ingest.vector_geometry import parse_slope_label
+
+    assert parse_slope_label("1:12") == pytest.approx(1 / 12)
+    assert parse_slope_label("SLOPE 1 IN 12") == pytest.approx(1 / 12)
+    assert parse_slope_label("8.3%") == pytest.approx(0.083)
+    assert parse_slope_label("12:1") == pytest.approx(1 / 12)  # run:rise -> inverted
+    assert parse_slope_label("no slope here") is None
+    assert parse_slope_label('1/4" = 1\'-0"') is None  # a drawing scale, not a slope
+
+
 # ------------------------------------------------------------------ snapping
 
 def test_snap_box_to_nearby_segments():

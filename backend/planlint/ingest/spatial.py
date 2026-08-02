@@ -351,6 +351,15 @@ async def ingest_floorplan(
                                     level="warning",
                                 )
                             )
+                if entity.entity_type == AssetType.RAMP and Parameter.SLOPE not in measurements:
+                    # A ramp's checkable datum is its printed slope (1:12, 8.3%).
+                    for label in labels:
+                        if geometry._box_distance(bbox, label.bbox) <= geometry.LABEL_RADIUS_PT:
+                            grade = geometry.parse_slope_label(label.text)
+                            if grade is not None:
+                                measurements[Parameter.SLOPE] = round(grade, 3)
+                                break
+
                 # Every asset must carry something real: a name, a measurement,
                 # or geometry it actually snapped to (source != vlm-only). A bare
                 # VLM guess with none of those is noise, not an asset. Rooms are

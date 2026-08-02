@@ -183,6 +183,48 @@ AREA_ARGS = {
 }
 
 
+SLOPE_ARGS = {
+    "constraints": [
+        {
+            "applies_to": "ramp",
+            "parameter": "slope",
+            "operator": "max",
+            "value": 0.083,
+            "value_high": None,
+            "unit": "ratio",
+            "extraction_confidence": 1.0,
+            "summary": "Ramp running slope shall not exceed 1:12.",
+        }
+    ]
+}
+
+
+async def test_slope_constraint_accepted():
+    def model_fn(messages, info):
+        return structured(info, SLOPE_ARGS)
+
+    constraints = await extract_constraints(CLAUSE, ANCESTORS, FunctionModel(model_fn))
+    assert len(constraints) == 1
+    assert constraints[0].parameter == Parameter.SLOPE
+    assert constraints[0].value == 0.083
+
+
+async def test_implausible_slope_triggers_retry():
+    calls = {"n": 0}
+
+    def model_fn(messages, info):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 12.0 as a "slope" (should be a decimal grade ~0.083) is implausible
+            bad = {"constraints": [{**SLOPE_ARGS["constraints"][0], "value": 12.0}]}
+            return structured(info, bad)
+        return structured(info, SLOPE_ARGS)
+
+    constraints = await extract_constraints(CLAUSE, ANCESTORS, FunctionModel(model_fn))
+    assert calls["n"] == 2
+    assert constraints[0].value == 0.083
+
+
 async def test_area_constraint_with_area_unit_accepted():
     def model_fn(messages, info):
         return structured(info, AREA_ARGS)
