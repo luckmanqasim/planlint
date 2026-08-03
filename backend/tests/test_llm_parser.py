@@ -92,6 +92,11 @@ def test_items_from_markdown_blocks():
     assert all(i.page == 3 for i in items)
 
 
+def test_items_from_markdown_records_heading_depth():
+    items = _items_from_markdown("# A\n\n## B\n\n### C", page_index=0)
+    assert [i.depth for i in items] == [1, 2, 3]
+
+
 def test_text_layer_to_markdown_marks_clause_starts():
     text = "404.2 Manual Doors.\nDoors shall comply.\nGeneral prose line."
     md = text_layer_to_markdown(text)

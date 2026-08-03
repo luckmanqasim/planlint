@@ -181,6 +181,10 @@ class StructuredItem:
     text: str
     page: int
     bbox: BBox | None = None
+    # Outline depth of a header (1 = '#', 2 = '##', …) when the parser exposes
+    # it (VLM markdown). Used only as a fallback when the clause number gives no
+    # parent; None means "hierarchy from the number alone".
+    depth: int | None = None
 
 
 # "SECTION 10 – ZONING" / "Chapter 4: Accessible Routes" style headers.
@@ -273,12 +277,24 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
     # is a roman numeral ("(v)", "(x)") or a stray, not a paragraph.
     letter_scope: str | None = None
     last_letter: str | None = None
+    # Outline nesting from header depth ('#'/'##'/…), a fallback for headings the
+    # number can't nest (unnumbered, outline, Chapter→section). (depth, clause_id).
+    depth_stack: list[tuple[int, str]] = []
 
     def start_clause(
-        clause_id: str, title: str, body: str, page: int, bbox: BBox | None
+        clause_id: str,
+        title: str,
+        body: str,
+        page: int,
+        bbox: BBox | None,
+        depth: int | None = None,
     ) -> None:
         """Create the clause, or merge into it when the id was already seen
-        (amendments, repeated numbering) — the first occurrence survives."""
+        (amendments, repeated numbering) — the first occurrence survives.
+
+        `depth` is a fallback parent signal: when the number gives no parent, the
+        clause nests under the nearest shallower heading. Numbering always wins
+        when it yields a parent, so the two signals never conflict."""
         nonlocal current
         if clause_id in by_id:
             merged = by_id[clause_id].model_copy(
@@ -288,6 +304,12 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
             current = merged
             return
         parent = _parent_id(clause_id, by_id)
+        if parent is None and depth is not None:
+            parent = next((cid for d, cid in reversed(depth_stack) if d < depth), None)
+        if depth is not None:
+            while depth_stack and depth_stack[-1][0] >= depth:
+                depth_stack.pop()
+            depth_stack.append((depth, clause_id))
         clause = RegulationClause(
             clause_id=clause_id,
             title=title,
@@ -371,7 +393,7 @@ def build_clause_tree_from_structure(items: list[StructuredItem]) -> list[Regula
                         letter_scope = None
                         last_letter = None
         if is_header:
-            start_clause(clause_id, title, body, page, bbox)
+            start_clause(clause_id, title, body, page, bbox, item.depth)
         else:
             if _TOC_TITLE.match(text):
                 # TOC titles sometimes arrive as body text, not headers.

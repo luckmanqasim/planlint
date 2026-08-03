@@ -22,6 +22,60 @@ def table(content: str, page: int = 0) -> StructuredItem:
     return StructuredItem(kind="table", text=content, page=page)
 
 
+def dheader(text: str, depth: int, page: int = 0) -> StructuredItem:
+    return StructuredItem(kind="header", text=text, page=page, depth=depth)
+
+
+def test_depth_nests_chapter_and_section():
+    # 'Chapter 4' → id '4', '404 Doors' → id '404'; they share no dotted prefix,
+    # so numbering alone leaves 404 a root. Heading depth nests it under Chapter 4.
+    clauses = build_clause_tree_from_structure(
+        [
+            dheader("CHAPTER 4 – ACCESSIBLE ROUTES", depth=1),
+            dheader("404 Doors", depth=2),
+            text("Doors shall comply with 404."),
+        ]
+    )
+    by_id = {c.clause_id: c for c in clauses}
+    assert by_id["404"].parent_clause_id == "4"
+
+
+def test_depth_nests_unnumbered_outline():
+    clauses = build_clause_tree_from_structure(
+        [
+            dheader("PART A GENERAL PROVISIONS", depth=1),
+            dheader("ADMINISTRATION", depth=2),
+            dheader("SCOPE", depth=3),
+        ]
+    )
+    by_id = {c.clause_id: c for c in clauses}
+    assert by_id["ADMINISTRATION"].parent_clause_id == "PART A GENERAL PROVISIONS"
+    assert by_id["SCOPE"].parent_clause_id == "ADMINISTRATION"
+
+
+def test_numeric_parent_wins_over_misleading_depth():
+    # 404.2.3 has a real numeric parent (404.2); a flat/misleading depth must not
+    # override it.
+    clauses = build_clause_tree_from_structure(
+        [
+            dheader("404.2 Manual Doors", depth=1),
+            dheader("404.2.3 Clear Width", depth=1),
+        ]
+    )
+    by_id = {c.clause_id: c for c in clauses}
+    assert by_id["404.2.3"].parent_clause_id == "404.2"
+
+
+def test_depth_none_preserves_flat_behavior():
+    # Backward-compat: without depth, Chapter 4 and 404 stay siblings (roots) —
+    # exactly today's behavior.
+    clauses = build_clause_tree_from_structure(
+        [header("CHAPTER 4 – ACCESSIBLE ROUTES"), header("404 Doors"), text("body")]
+    )
+    by_id = {c.clause_id: c for c in clauses}
+    assert by_id["404"].parent_clause_id is None
+
+
 def test_numbered_headers_with_body_and_tables():
     clauses = build_clause_tree_from_structure(
         [

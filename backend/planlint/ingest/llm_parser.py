@@ -61,7 +61,11 @@ Rules:
   Doors'), '##' for lettered paragraph headings ('(a) Design and
   construction.'), '###' for numbered sub-paragraph headings ('(2) Exception
   for structural impracticability.'). Keep the printed numbering in the
-  heading text.
+  heading text. Heading depth must reflect the outline nesting: use a deeper
+  level for a more deeply nested heading, so a document's structure (e.g.
+  Chapter > Section > (a) > (2) > (i), or Article > Section > subsection)
+  reads as progressively deeper '#' levels even when the numbering scheme is
+  unusual or absent.
 - Transcribe tables as Markdown tables.
 - Transcribe table-of-contents and index pages faithfully, marking their
   title ('CONTENTS', 'Index') as a '#' heading.
@@ -69,7 +73,7 @@ Rules:
   (e.g. 'Department of Justice', 'Section 35.151 of 28 CFR Part 35').
 """
 
-_HEADING = re.compile(r"^#{1,6}\s+(?P<text>\S.*)$")
+_HEADING = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<text>\S.*)$")
 _TOKEN = re.compile(r"[a-z0-9]+")
 # A dimension: a number bound to a unit/quote/percent/ratio. These are the
 # compliance-load-bearing tokens; section ids ("404.2") and page numbers ("20")
@@ -174,7 +178,14 @@ def _items_from_markdown(markdown: str, page_index: int) -> list[StructuredItem]
         if heading:
             flush_paragraph()
             flush_table()
-            items.append(StructuredItem("header", heading.group("text").strip(), page_index))
+            items.append(
+                StructuredItem(
+                    "header",
+                    heading.group("text").strip(),
+                    page_index,
+                    depth=len(heading.group("hashes")),
+                )
+            )
         elif stripped.startswith("|"):
             flush_paragraph()
             table.append(stripped)
