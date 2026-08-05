@@ -379,6 +379,98 @@ async def test_joist_note_is_not_read_as_door_clear_width(tmp_path, fake_repo, m
     assert door["measurements"]["clear_width"] == pytest.approx(24.0, abs=1.0)  # the gap, not 16"
 
 
+def test_resolve_callout_kind_and_proximity():
+    # A door accepts only door (letter) marks, a window only window (number)
+    # marks, and only within a tight radius — so a numeric section marker can't
+    # pose as a window callout, and a door won't grab a window's number.
+    from planlint.ingest.schedule import OpeningSpec
+    from planlint.ingest.spatial import _resolve_callout
+    from planlint.ingest.vector_geometry import TextLabel
+
+    index = {
+        "C": OpeningSpec(AssetType.DOOR, "C", 24.0, 80.0),
+        "1": OpeningSpec(AssetType.WINDOW, "1", 30.0, 60.0),
+    }
+    labels = [TextLabel("C", (100, 100, 110, 110)), TextLabel("1", (300, 300, 310, 310))]
+    assert _resolve_callout((95, 95, 115, 115), AssetType.DOOR, labels, index) == "C"
+    # a door over the numeric mark does not match it (kind restriction)
+    assert _resolve_callout((295, 295, 315, 315), AssetType.DOOR, labels, index) is None
+    # a window far from any mark matches nothing (proximity)
+    assert _resolve_callout((500, 500, 520, 520), AssetType.WINDOW, labels, index) is None
+
+
+async def _ingest_two_page_set(tmp_path, fake_repo, monkeypatch, door_callout, schedule_size,
+                               scale_text):
+    """A 2-page set: a floor-plan door in a wall gap tagged `door_callout`, then a
+    door schedule mapping mark 'C' → `schedule_size`. Returns the plan door row."""
+    pdf = tmp_path / "set.pdf"
+    doc = pymupdf.open()
+    p0 = doc.new_page(width=612, height=792)
+    p0.draw_line((100, 200), (250, 200))
+    p0.draw_line((286, 200), (440, 200))  # 36pt gap → 24" at 1/4"=1'
+    if door_callout:
+        p0.insert_text((262, 190), door_callout, fontsize=8)  # callout on the door
+    p1 = doc.new_page(width=612, height=792)
+    p1.insert_text((100, 100), "DOOR SCHEDULE", fontsize=10)
+    p1.insert_text((100, 140), "C", fontsize=9)
+    p1.insert_text((165, 140), schedule_size, fontsize=9)
+    doc.save(str(pdf))
+    doc.close()
+
+    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    order = [SheetType.FLOOR_PLAN, SheetType.SCHEDULE]
+    seen = {"i": 0}
+
+    def fake_classify(page):
+        t = order[min(seen["i"], len(order) - 1)]
+        seen["i"] += 1
+        return t
+
+    monkeypatch.setattr(spatial, "classify_sheet", fake_classify)
+
+    async def fake_detect(png, model):
+        return VlmPage(
+            entities=[VlmEntity(entity_type=AssetType.DOOR, name="", box=(245, 192, 291, 208))],
+            scale_text=scale_text,
+        )
+
+    monkeypatch.setattr(spatial, "detect_page", fake_detect)
+    row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
+           "filename": "set.pdf", "path": str(pdf), "ingested": False}
+    fake_repo.documents["doc-1"] = row
+
+    async def emit(event):
+        return None
+
+    await spatial.ingest_floorplan(pdf, row, fake_repo, model=None, emit=emit)
+    doors = [a for a in fake_repo.assets.values() if a["type"] == "door"]
+    # The plan door is the small (gap-sized) one; the schedule sheet also records
+    # a full-page standalone door row.
+    return min(doors, key=lambda a: a["bbox"][2] - a["bbox"][0])
+
+
+async def test_opening_width_from_schedule_callout(tmp_path, fake_repo, monkeypatch):
+    # Door tagged 'C', schedule C = 30"x80": the clear width is the schedule size
+    # (30"), joined by the callout — overriding the measured 24" gap.
+    door = await _ingest_two_page_set(
+        tmp_path, fake_repo, monkeypatch,
+        door_callout="C", schedule_size='30"x80"', scale_text='SCALE: 1/4" = 1\'-0"',
+    )
+    assert door["measurements"]["clear_width"] == 30.0
+    assert door["source"] == "schedule"
+
+
+async def test_unmatched_callout_falls_back_to_gap(tmp_path, fake_repo, monkeypatch):
+    # Door tagged 'Z' (not in the schedule): no join, so the width falls back to
+    # the measured wall gap (36pt × 48/72 = 24"), not the schedule's 30".
+    door = await _ingest_two_page_set(
+        tmp_path, fake_repo, monkeypatch,
+        door_callout="Z", schedule_size='30"x80"', scale_text='SCALE: 1/4" = 1\'-0"',
+    )
+    assert door["measurements"]["clear_width"] == pytest.approx(24.0, abs=1.0)
+    assert door["source"] != "schedule"
+
+
 async def test_refuted_opening_is_dropped_and_snapped_uses_gap_width(tmp_path, fake_repo, monkeypatch):
     from planlint.ingest.sheet_type import SheetType
     from planlint.ingest.vlm import VlmEntity, VlmPage

@@ -72,7 +72,7 @@ class PhysicalAsset(BaseModel):
     label: str = ""
     bbox: BBox
     confidence: float = 1.0
-    source: Literal["vector-snapped", "raster-snapped", "vlm-only"] = "vlm-only"
+    source: Literal["vector-snapped", "raster-snapped", "vlm-only", "schedule"] = "vlm-only"
     measurements: dict[Parameter, float] = Field(default_factory=dict)
 
 

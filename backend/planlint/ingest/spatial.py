@@ -23,7 +23,12 @@ from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.ocr import ocr_boxes
-from planlint.ingest.schedule import parse_schedule
+from planlint.ingest.schedule import (
+    OpeningSpec,
+    _normalize_mark as normalize_mark,
+    parse_schedule,
+    parse_schedule_index,
+)
 from planlint.ingest.sheet_type import SheetType, classify_sheet
 from planlint.ingest.vector_geometry import classify_opening_vector
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, fake_detect_from_labels
@@ -40,6 +45,42 @@ def _extent_axis(box: BBox) -> tuple[str, float, float]:
     """An opening's clear width runs along its longer side: that axis and span."""
     x0, y0, x1, y1 = box
     return ("h", x0, x1) if (x1 - x0) >= (y1 - y0) else ("v", y0, y1)
+
+
+# How close (PDF points) a callout mark must sit to an opening box to be its tag.
+_CALLOUT_RADIUS_PT = 24.0
+
+
+def _resolve_callout(
+    box: BBox, kind: AssetType, labels: Sequence, index: dict[str, OpeningSpec]
+) -> str | None:
+    """The opening's schedule mark from the drawing: the nearest label within
+    _CALLOUT_RADIUS_PT whose normalized text is an index key of the matching kind.
+    Kind-restriction (a door accepts only door marks) plus proximity separate a
+    window's callout from a perimeter section marker that shares its glyph."""
+    best: str | None = None
+    best_d = _CALLOUT_RADIUS_PT + 1.0
+    for lbl in labels:
+        mark = normalize_mark(lbl.text)
+        if mark is None or mark not in index or index[mark].kind is not kind:
+            continue
+        d = geometry._box_distance(box, lbl.bbox)
+        if d <= _CALLOUT_RADIUS_PT and d < best_d:
+            best, best_d = mark, d
+    return best
+
+
+def _resolve_mark(
+    vlm_mark: str | None, box: BBox, kind: AssetType, labels: Sequence,
+    index: dict[str, OpeningSpec],
+) -> str | None:
+    """An opening's schedule mark: the VLM's read (validated against the index and
+    kind) first, else the nearest matching callout label on the drawing."""
+    if vlm_mark:
+        mark = normalize_mark(vlm_mark)
+        if mark and mark in index and index[mark].kind is kind:
+            return mark
+    return _resolve_callout(box, kind, labels, index)
 
 
 # A printed area annotation: a number followed by an area unit.
@@ -183,6 +224,34 @@ async def ingest_floorplan(
     try:
         total = len(doc)
 
+        # Document-level pass first: classify every page once, then build one
+        # schedule index (mark → opening size) from all schedule sheets, so a
+        # plan opening's callout can be joined to its printed size no matter
+        # which sheet the schedule lives on.
+        sheet_types: list[SheetType] = []
+        for i in range(total):
+            try:
+                sheet_types.append(await asyncio.to_thread(classify_sheet, doc[i]))
+            except Exception:  # a page we can't classify still gets processed
+                sheet_types.append(SheetType.OTHER)
+        schedule_index: dict[str, OpeningSpec] = {}
+        for i, st in enumerate(sheet_types):
+            if st is SheetType.SCHEDULE:
+                try:
+                    idx = await asyncio.to_thread(parse_schedule_index, doc[i])
+                except Exception:
+                    idx = {}
+                for mark, spec in idx.items():
+                    schedule_index.setdefault(mark, spec)
+        if schedule_index:
+            await emit(
+                RunEvent(
+                    stage="ingest:spatial",
+                    message=f"Schedule index: {len(schedule_index)} opening mark(s) "
+                    "for callout matching",
+                )
+            )
+
         async def record_sheet(page_index, page, assets, scale_text, scale) -> None:
             sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
             await repo.create_sheet(
@@ -198,10 +267,10 @@ async def ingest_floorplan(
 
         async def process_page(page_index: int) -> str:
             page = doc[page_index]
-            # Route by sheet type: a construction set is mostly non-plan-view
-            # sheets, and running the plan-view detector on an elevation or
-            # section produces garbage boxes. Classify first, then dispatch.
-            sheet_type = await asyncio.to_thread(classify_sheet, page)
+            # Route by sheet type (precomputed above): a construction set is
+            # mostly non-plan-view sheets, and running the plan-view detector on
+            # an elevation or section produces garbage boxes.
+            sheet_type = sheet_types[page_index]
 
             if sheet_type is SheetType.SCHEDULE:
                 page_type = await asyncio.to_thread(geometry.detect_pdf_type, page)
@@ -327,17 +396,37 @@ async def ingest_floorplan(
                     source, confidence = "raster-snapped", 0.8
                 else:
                     bbox, source, confidence = entity.box, "vlm-only", 0.6
+                measurements: dict[Parameter, float] = {}
+
+                # Highest-precedence opening width: the door/window schedule size,
+                # joined by the opening's callout mark (VLM-read, else the nearest
+                # matching callout label on the drawing). A printed spec keyed by
+                # the plan tag beats every measured/geometric width. The schedule
+                # figure is the nominal opening size, recorded as the clear width.
+                from_schedule = False
+                if schedule_index and entity.entity_type in _OPENING_TYPES:
+                    kind = (
+                        AssetType.WINDOW
+                        if entity.entity_type is AssetType.WINDOW
+                        else AssetType.DOOR
+                    )
+                    mark = _resolve_mark(entity.mark, bbox, kind, labels, schedule_index)
+                    if mark is not None:
+                        measurements[Parameter.CLEAR_WIDTH] = round(schedule_index[mark].width_in, 1)
+                        confidence = max(confidence, 0.95)
+                        source = "schedule"
+                        from_schedule = True
+
                 # measure_asset yields a clear width — meaningful for an opening,
                 # never for a room/corridor: its longest-segment fallback would
                 # hand a space the longest random line inside it (a wall, a
-                # fixture), not a real width. A space's width, if any, must come
-                # from a bounded dimension (grid/label), so skip it for spaces.
+                # fixture), not a real width. Skip it for spaces, and for an
+                # opening already resolved from the schedule.
                 measured = (
                     None
-                    if entity.entity_type in _SPACE_TYPES
+                    if entity.entity_type in _SPACE_TYPES or from_schedule
                     else geometry.measure_asset(bbox, primitives, labels, scale)
                 )
-                measurements = {}
                 label_clear_width = False
                 if measured is not None:
                     measurements, from_label = measured
@@ -345,17 +434,23 @@ async def ingest_floorplan(
                         confidence = min(confidence, 0.6)  # geometry heuristic
                     label_clear_width = from_label and Parameter.CLEAR_WIDTH in measurements
 
-                # Top-precedence width: a printed dimension bound to a real
-                # dimension line (validated value ≈ span × scale) outranks a bare
-                # nearby label, the wall-gap, and longest-segment geometry.
+                # Next-best width: a printed dimension bound to a real dimension
+                # line (validated value ≈ span × scale) outranks a bare nearby
+                # label, the wall-gap, and longest-segment geometry.
                 grid_clear_width: float | None = None
-                if dimension_grid and entity.entity_type in _OPENING_TYPES:
+                if (
+                    dimension_grid
+                    and entity.entity_type in _OPENING_TYPES
+                    and not from_schedule
+                ):
                     axis, lo, hi = _extent_axis(bbox)
                     grid_clear_width = dimensions.measure_span(dimension_grid, axis, lo, hi)
                     if grid_clear_width is not None:
                         measurements[Parameter.CLEAR_WIDTH] = round(grid_clear_width, 1)
                         confidence = max(confidence, 0.95)
-                printed_clear_width = label_clear_width or grid_clear_width is not None
+                printed_clear_width = (
+                    from_schedule or label_clear_width or grid_clear_width is not None
+                )
                 if (
                     opening_result is not None
                     and opening_result.kind == "snapped"

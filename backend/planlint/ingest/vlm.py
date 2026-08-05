@@ -44,6 +44,7 @@ class VlmEntity(BaseModel):
     entity_type: AssetType
     name: str = ""  # clean identifier only ('GARAGE', 'D1') — no dimensions
     floor_area_m2: float | None = None  # printed floor area, rooms only
+    mark: str | None = None  # door/window schedule callout ('A', '2') — the schedule key
     box: tuple[float, float, float, float]  # pixels in the rendered image
 
 
@@ -99,6 +100,9 @@ For each entity return:
   room names. If a room shows no descriptive name, return an empty string.
 - floor_area_m2: for rooms, the printed floor area as a bare number (39.37
   from '39.37 m²'); null when not printed or not a room.
+- mark: for a door or window, the schedule callout tag sitting on it — the
+  circled letter or number that keys the door/window schedule ('A', '2'). It is
+  the schedule key, not a separate entity; null for other types or when untagged.
 - box: [ymin, xmin, ymax, xmax] normalized to 1000 (0-1000 scale) covering
   the entity's FULL PHYSICAL EXTENT:
   * room: the entire interior from wall to wall — never just the room's
