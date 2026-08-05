@@ -72,6 +72,22 @@ def test_dimension_embedded_in_door_tag():
     assert parse_dimension_label('D1 36"') == 36.0
 
 
+def test_dimension_rejects_structural_note():
+    # A joist spacing note carries '16"' but is not a clear width — the '@'/'OC'
+    # and lumber section '2X12' both mark it as a note.
+    assert parse_dimension_label('2X12 JOISTS @ 16" OC') is None
+
+
+def test_dimension_rejects_material_note():
+    # '5/8" GYP BD' — the '8"' must not become a measurement (word 'GYP' beside it).
+    assert parse_dimension_label('5/8" GYP BD') is None
+
+
+def test_dimension_keeps_qualified_callout():
+    # A real dimension with a MIN qualifier is still a dimension.
+    assert parse_dimension_label('3\'-6" MIN') == 42.0
+
+
 # ------------------------------------------------------------- parse_slope_label
 
 def test_parse_slope_label():

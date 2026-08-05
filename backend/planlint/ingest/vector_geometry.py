@@ -126,15 +126,46 @@ def parse_scale(text: str) -> float | None:
 _DIM_FT_IN = re.compile(r"""(?P<feet>\d+)\s*'\s*-?\s*(?P<inches>\d+)\s*"?""")
 _DIM_IN = re.compile(r"""(?P<inches>\d+(?:\.\d+)?)\s*(?:"|\bin\b\.?)""", re.IGNORECASE)
 
+# Signatures that a number lives inside a structural/material *note*, not a
+# dimension callout: on-center spacing ('@', 'O.C.') and lumber sections ('2X12').
+_ON_CENTER = re.compile(r"@|\bO\.?C\.?\b", re.IGNORECASE)
+_LUMBER = re.compile(r"\b\d+\s*[xX]\s*\d+\b")
+_ALPHA_RUN = re.compile(r"[A-Za-z]{2,}")
+# The only multi-letter words a genuine dimension callout carries: units and
+# qualifiers. Anything else beside the number means it's prose (a note).
+_DIM_WORDS = {"IN", "FT", "MM", "CM", "MIN", "MAX", "CLR", "TYP", "NOM", "EQ"}
+
+
+def _is_dimension_note(text: str, matched: str) -> bool:
+    """True when `text` is a structural/material note that merely *contains* a
+    number ('2X12 JOISTS @ 16" OC', '5/8" GYP BD') rather than being a dimension
+    callout — such numbers must never be read as a measurement. A tag like 'D1'
+    (letter+digit, no 2-letter alpha run) is allowed; a word like 'JOISTS' is not.
+    """
+    if _ON_CENTER.search(text) or _LUMBER.search(text):
+        return True
+    remainder = text.replace(matched, " ", 1)
+    return any(
+        run.group(0).upper() not in _DIM_WORDS for run in _ALPHA_RUN.finditer(remainder)
+    )
+
 
 def parse_dimension_label(text: str) -> float | None:
-    """Find a CAD dimension ('36"', "3'-0\"", '30 in', 'D1 36"') in a label."""
+    """Find a CAD dimension ('36"', "3'-0\"", '30 in', 'D1 36"') in a label.
+
+    Returns None for structural/material notes that merely contain a number
+    (e.g. '2X12 JOISTS @ 16" OC', '5/8" GYP BD') — see `_is_dimension_note`.
+    """
     text = text.strip()
     m = _DIM_FT_IN.search(text)
     if m:
+        if _is_dimension_note(text, m.group(0)):
+            return None
         return int(m.group("feet")) * 12 + int(m.group("inches"))
     m = _DIM_IN.search(text)
     if m:
+        if _is_dimension_note(text, m.group(0)):
+            return None
         return float(m.group("inches"))
     return None
 

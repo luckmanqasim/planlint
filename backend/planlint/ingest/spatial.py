@@ -9,13 +9,16 @@ Hybrid strategy per page:
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Awaitable, Callable
 
 import pymupdf
 
 from planlint.config import settings
+from planlint.ingest import dimensions
 from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
@@ -24,12 +27,40 @@ from planlint.ingest.schedule import parse_schedule
 from planlint.ingest.sheet_type import SheetType, classify_sheet
 from planlint.ingest.vector_geometry import classify_opening_vector
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, fake_detect_from_labels
-from planlint.models import AssetType, Parameter, PhysicalAsset, RunEvent
+from planlint.models import AssetType, BBox, Parameter, PhysicalAsset, RunEvent
 
 EmitFn = Callable[[RunEvent], Awaitable[None]]
 
 _OPENING_TYPES = (AssetType.DOOR, AssetType.FIRE_EXIT, AssetType.WINDOW)
 _SPACE_TYPES = (AssetType.ROOM, AssetType.CORRIDOR)
+_SQIN_TO_M2 = 0.00064516  # 1 in² in m² — for width×depth areas off the dim grid
+
+
+def _extent_axis(box: BBox) -> tuple[str, float, float]:
+    """An opening's clear width runs along its longer side: that axis and span."""
+    x0, y0, x1, y1 = box
+    return ("h", x0, x1) if (x1 - x0) >= (y1 - y0) else ("v", y0, y1)
+
+
+# A printed area annotation: a number followed by an area unit.
+_AREA_ANNOT = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(m²|m2|sqm|sq\.?\s*m|sq\.?\s*ft|ft²|ft2|SF)\b", re.IGNORECASE
+)
+_SQFT_TO_M2 = 0.09290304
+
+
+def _printed_area_present(value_m2: float, labels: Sequence[geometry.TextLabel]) -> bool:
+    """True when the sheet actually prints an area matching `value_m2` (within
+    10%). Grounds the VLM's `floor_area_m2`: residential plans print no areas, so
+    an unmatched value is a model guess and must never become a measurement."""
+    for label in labels:
+        for num, unit in _AREA_ANNOT.findall(label.text):
+            area = float(num)
+            if "ft" in unit.lower() or unit.upper() == "SF":
+                area *= _SQFT_TO_M2
+            if abs(area - value_m2) <= 0.1 * max(value_m2, 1.0):
+                return True
+    return False
 
 # Sheet types with no linted geometry: recorded, but not detected. OTHER is
 # deliberately absent — an untitled drawing (a bare floor-plan PDF with no title
@@ -254,6 +285,15 @@ async def ingest_floorplan(
                     _snap_raster_entities, raster, vlm_page.entities
                 )
 
+            # The dimension grid: printed dimensions bound to their dimension
+            # lines and validated against length × scale. Vector-only (raster
+            # needs OCR + pixel lines) and needs a scale to validate.
+            dimension_grid = (
+                dimensions.build_dimension_grid(primitives, labels, scale)
+                if page_type == "vector" and scale is not None
+                else []
+            )
+
             # Vector snapping/measuring is cheap relative to parsing and
             # rasterizing; not worth a thread hop per entity.
             assets: list[PhysicalAsset] = []
@@ -287,7 +327,16 @@ async def ingest_floorplan(
                     source, confidence = "raster-snapped", 0.8
                 else:
                     bbox, source, confidence = entity.box, "vlm-only", 0.6
-                measured = geometry.measure_asset(bbox, primitives, labels, scale)
+                # measure_asset yields a clear width — meaningful for an opening,
+                # never for a room/corridor: its longest-segment fallback would
+                # hand a space the longest random line inside it (a wall, a
+                # fixture), not a real width. A space's width, if any, must come
+                # from a bounded dimension (grid/label), so skip it for spaces.
+                measured = (
+                    None
+                    if entity.entity_type in _SPACE_TYPES
+                    else geometry.measure_asset(bbox, primitives, labels, scale)
+                )
                 measurements = {}
                 label_clear_width = False
                 if measured is not None:
@@ -295,11 +344,23 @@ async def ingest_floorplan(
                     if not from_label:
                         confidence = min(confidence, 0.6)  # geometry heuristic
                     label_clear_width = from_label and Parameter.CLEAR_WIDTH in measurements
+
+                # Top-precedence width: a printed dimension bound to a real
+                # dimension line (validated value ≈ span × scale) outranks a bare
+                # nearby label, the wall-gap, and longest-segment geometry.
+                grid_clear_width: float | None = None
+                if dimension_grid and entity.entity_type in _OPENING_TYPES:
+                    axis, lo, hi = _extent_axis(bbox)
+                    grid_clear_width = dimensions.measure_span(dimension_grid, axis, lo, hi)
+                    if grid_clear_width is not None:
+                        measurements[Parameter.CLEAR_WIDTH] = round(grid_clear_width, 1)
+                        confidence = max(confidence, 0.95)
+                printed_clear_width = label_clear_width or grid_clear_width is not None
                 if (
                     opening_result is not None
                     and opening_result.kind == "snapped"
                     and scale is not None
-                    and not label_clear_width  # a printed dimension wins over the gap
+                    and not printed_clear_width  # a printed dimension wins over the gap
                 ):
                     measurements[Parameter.CLEAR_WIDTH] = round(opening_result.width_pt * scale, 1)
                 if (
@@ -309,16 +370,51 @@ async def ingest_floorplan(
                 ):
                     # Pixel-measured wall-gap width × drawing scale.
                     measurements[Parameter.CLEAR_WIDTH] = round(opening_width_pt * scale, 1)
-                if entity.floor_area_m2 is not None and entity.floor_area_m2 > 0:
-                    # Printed floor area read off the drawing (m² by plan
-                    # convention) — a real dimension, not a geometry guess.
-                    measurements[Parameter.AREA] = entity.floor_area_m2
+                # A room's area from the two bounding dimension lines (width ×
+                # depth) is deterministic — it outranks the VLM-read printed
+                # number, which it instead cross-checks.
+                grid_area_m2: float | None = None
+                if dimension_grid and entity.entity_type in _SPACE_TYPES:
+                    x0, y0, x1, y1 = bbox
+                    width = dimensions.measure_span(dimension_grid, "h", x0, x1)
+                    depth = dimensions.measure_span(dimension_grid, "v", y0, y1)
+                    if width is not None and depth is not None:
+                        grid_area_m2 = round(width * depth * _SQIN_TO_M2, 2)
+                if grid_area_m2 is not None:
+                    measurements[Parameter.AREA] = grid_area_m2
+                    confidence = max(confidence, 0.9)
+                    if entity.floor_area_m2 is not None and entity.floor_area_m2 > 0:
+                        # Two independent sources: the dimensioned width×depth and
+                        # the printed number. Agreement earns confidence;
+                        # disagreement demands review.
+                        if raster_geometry.area_agreement(entity.floor_area_m2, grid_area_m2):
+                            confidence = max(confidence, 0.95)
+                        else:
+                            confidence = min(confidence, 0.5)
+                            await emit(
+                                RunEvent(
+                                    stage="ingest:spatial",
+                                    message=f"{entity.name or 'room'}: printed area "
+                                    f"{entity.floor_area_m2:g} m² disagrees with the "
+                                    f"dimensioned {grid_area_m2:g} m² — check the "
+                                    "drawing scale",
+                                    level="warning",
+                                )
+                            )
+                elif entity.floor_area_m2 is not None and entity.floor_area_m2 > 0:
+                    # The VLM's floor_area_m2 is trusted only when the sheet
+                    # actually prints a matching area (verified against the text
+                    # layer) or the raster fill confirms it. A residential plan
+                    # prints no areas, so an ungrounded number here is a model
+                    # guess — dropped (→ NEEDS_REVIEW), never invented into the graph.
+                    grounded = _printed_area_present(entity.floor_area_m2, labels)
                     if fill_area_pt2 is not None and scale is not None:
-                        # Two independent sources: the printed number and the
-                        # flood-filled interior × scale². Agreement earns
-                        # confidence; disagreement demands review.
+                        # A second, geometric source: the flood-filled interior ×
+                        # scale². Agreement grounds and earns confidence;
+                        # disagreement demands review.
                         computed_m2 = raster_geometry.fill_area_to_m2(fill_area_pt2, scale)
                         if raster_geometry.area_agreement(entity.floor_area_m2, computed_m2):
+                            grounded = True
                             confidence = max(confidence, 0.9)
                         else:
                             confidence = min(confidence, 0.5)
@@ -332,6 +428,8 @@ async def ingest_floorplan(
                                     level="warning",
                                 )
                             )
+                    if grounded:
+                        measurements[Parameter.AREA] = entity.floor_area_m2
                 if entity.entity_type == AssetType.RAMP and Parameter.SLOPE not in measurements:
                     # A ramp's checkable datum is its printed slope (1:12, 8.3%).
                     for label in labels:

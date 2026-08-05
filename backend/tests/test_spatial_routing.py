@@ -130,14 +130,14 @@ def _room_pdf(path):
     doc.close()
 
 
-async def _ingest_entity(pdf, fake_repo, monkeypatch, entity):
+async def _ingest_entity(pdf, fake_repo, monkeypatch, entity, scale_text=None):
     """Ingest a single-page plan whose detector returns exactly `entity`; return
     all asset rows written to the repo."""
     monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
-        return VlmPage(entities=[entity], scale_text=None)
+        return VlmPage(entities=[entity], scale_text=scale_text)
 
     monkeypatch.setattr(spatial, "detect_page", fake_detect)
     row = {
@@ -164,15 +164,51 @@ async def test_wall_snapped_but_nameless_room_is_dropped(tmp_path, fake_repo, mo
 
 
 async def test_unnamed_room_with_printed_area_is_kept(tmp_path, fake_repo, monkeypatch):
-    # The "OR printed area" branch: an unnamed room that carries an area survives.
+    # The "OR printed area" branch: an unnamed room whose area is *printed on the
+    # sheet* (grounding the VLM value) survives and carries that area.
     pdf = tmp_path / "plan.pdf"
-    _room_pdf(pdf)
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.draw_line((100, 100), (300, 100))
+    page.draw_line((100, 200), (300, 200))
+    page.draw_line((100, 100), (100, 200))
+    page.draw_line((300, 100), (300, 200))
+    page.insert_text((180, 160), "18 m2", fontsize=8)  # printed area grounds the value
+    doc.save(str(pdf))
+    doc.close()
     entity = VlmEntity(
         entity_type=AssetType.ROOM, name="", floor_area_m2=18.0, box=(105, 105, 295, 195)
     )
     assets = await _ingest_entity(pdf, fake_repo, monkeypatch, entity)
     assert len(assets) == 1
     assert assets[0]["measurements"]["area_m2"] == 18.0
+
+
+async def test_fabricated_room_area_is_dropped(tmp_path, fake_repo, monkeypatch):
+    # No area is printed on the sheet, so the VLM's floor_area_m2 is a guess and
+    # is NOT turned into a measurement. An unnamed room then has nothing checkable
+    # and is dropped — never carries an invented area.
+    pdf = tmp_path / "plan.pdf"
+    _room_pdf(pdf)
+    entity = VlmEntity(
+        entity_type=AssetType.ROOM, name="", floor_area_m2=18.0, box=(105, 105, 295, 195)
+    )
+    assets = await _ingest_entity(pdf, fake_repo, monkeypatch, entity)
+    assert assets == []
+
+
+async def test_room_gets_no_clear_width(tmp_path, fake_repo, monkeypatch):
+    # A room must never receive a clear width. Even with long wall segments inside
+    # its box (which the longest-segment heuristic would grab × scale), the room
+    # carries no clear_width — that heuristic is for openings, not spaces.
+    pdf = tmp_path / "plan.pdf"
+    _room_pdf(pdf)  # 200pt walls sit inside the room box as long segments
+    entity = VlmEntity(entity_type=AssetType.ROOM, name="LOUNGE", box=(105, 105, 295, 195))
+    assets = await _ingest_entity(
+        pdf, fake_repo, monkeypatch, entity, scale_text='SCALE: 1/4" = 1\'-0"'
+    )
+    assert len(assets) == 1
+    assert "clear_width" not in assets[0]["measurements"]
 
 
 async def test_bare_vlm_guess_is_dropped(tmp_path, fake_repo, monkeypatch):
@@ -264,6 +300,83 @@ async def test_snapped_door_without_name_or_measurement_is_kept(tmp_path, fake_r
     assert len(assets) == 1
     assert assets[0]["type"] == "door"
     assert assets[0]["source"] == "vector-snapped"
+
+
+async def test_room_area_from_dimension_grid(tmp_path, fake_repo, monkeypatch):
+    # A room bounded by walls, with an overall H dimension (12'-0") above it and a
+    # V dimension (8'-0") beside it, gets its area from width×depth off the grid —
+    # the dimension lines sit *outside* the room, associated by matching span.
+    pdf = tmp_path / "plan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    # Room walls: 216pt (=12'-0" @ 1/4"=1') wide, 144pt (=8'-0") tall.
+    page.draw_line((100, 100), (316, 100))   # top wall
+    page.draw_line((100, 244), (316, 244))   # bottom wall
+    page.draw_line((100, 100), (100, 244))   # left wall
+    page.draw_line((316, 100), (316, 244))   # right wall
+    page.draw_line((100, 72), (316, 72))     # H dimension line, above the room
+    page.draw_line((72, 100), (72, 244))     # V dimension line, left of the room
+    page.insert_text((190, 70), "12'-0\"", fontsize=8)  # on the H dim line
+    page.insert_text((52, 175), "8'-0\"", fontsize=8)    # on the V dim line
+    doc.save(str(pdf))
+    doc.close()
+
+    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
+
+    async def fake_detect(png, model):
+        return VlmPage(
+            entities=[VlmEntity(entity_type=AssetType.ROOM, name="OFFICE", box=(108, 108, 308, 236))],
+            scale_text='SCALE: 1/4" = 1\'-0"',
+        )
+
+    monkeypatch.setattr(spatial, "detect_page", fake_detect)
+    row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
+           "filename": "plan.pdf", "path": str(pdf), "ingested": False}
+    fake_repo.documents["doc-1"] = row
+
+    async def emit(event):
+        return None
+
+    await spatial.ingest_floorplan(pdf, row, fake_repo, model=None, emit=emit)
+    room = next(a for a in fake_repo.assets.values() if a["type"] == "room")
+    # 144" × 96" = 13824 in² → 8.92 m².
+    assert room["measurements"]["area_m2"] == pytest.approx(8.92, abs=0.05)
+
+
+async def test_joist_note_is_not_read_as_door_clear_width(tmp_path, fake_repo, monkeypatch):
+    # A structural note ("2X12 JOISTS @ 16\" OC") sits next to a door. Its 16"
+    # must NOT become the clear width — the door's width comes from the wall gap
+    # (36pt × 48/72 = 24"), not the note.
+    pdf = tmp_path / "plan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.draw_line((100.0, 200.0), (250.0, 200.0))  # wall left of the door
+    page.draw_line((286.0, 200.0), (440.0, 200.0))  # wall right (gap 250..286 = 36pt)
+    page.insert_text((255, 188), '2X12 JOISTS @ 16" OC', fontsize=8)  # joist note by the door
+    doc.save(str(pdf))
+    doc.close()
+
+    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
+
+    async def fake_detect(png, model):
+        return VlmPage(
+            entities=[VlmEntity(entity_type=AssetType.DOOR, name="", box=(245.0, 192.0, 291.0, 208.0))],
+            scale_text='SCALE: 1/4" = 1\'-0"',
+        )
+
+    monkeypatch.setattr(spatial, "detect_page", fake_detect)
+    row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
+           "filename": "plan.pdf", "path": str(pdf), "ingested": False}
+    fake_repo.documents["doc-1"] = row
+
+    async def emit(event):
+        return None
+
+    await spatial.ingest_floorplan(pdf, row, fake_repo, model=None, emit=emit)
+    door = next(a for a in fake_repo.assets.values() if a["type"] == "door")
+    assert door["measurements"]["clear_width"] == pytest.approx(24.0, abs=1.0)  # the gap, not 16"
 
 
 async def test_refuted_opening_is_dropped_and_snapped_uses_gap_width(tmp_path, fake_repo, monkeypatch):
