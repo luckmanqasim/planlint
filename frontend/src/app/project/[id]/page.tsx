@@ -89,19 +89,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   function setSelectedAsset(sheet: Sheet | null, asset: Asset | null) {
     if (!sheet || !asset) {
-      console.log("[planlint] selected box cleared");
       setSelection(null);
       return;
     }
-    console.log("[planlint] selected box", {
-      sheetId: sheet.id,
-      page: sheet.page_number + 1,
-      assetId: asset.id,
-      label: asset.label,
-      type: asset.type,
-      bbox: asset.bbox,
-      verdicts: asset.verdicts,
-    });
     setSelection({ sheetId: sheet.id, assetId: asset.id });
   }
 
