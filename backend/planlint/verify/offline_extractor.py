@@ -1,4 +1,4 @@
-"""Deterministic constraint extraction for PLANLINT_FAKE_LLM mode.
+"""Deterministic constraint extraction for PLANLINT_OFFLINE_SAMPLE mode.
 
 Regex-parses simple numeric requirements ('… 32 inches (815 mm) minimum')
 so the full pipeline — including the golden end-to-end test and the offline
@@ -41,7 +41,7 @@ def _parameter(text: str) -> Parameter:
     return Parameter.CLEAR_WIDTH
 
 
-def fake_extract(clause: dict) -> list[Constraint]:
+def offline_extract(clause: dict) -> list[Constraint]:
     text = clause["text"]
     constraints: list[Constraint] = []
     m = _HALF.search(text)

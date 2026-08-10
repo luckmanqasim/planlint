@@ -75,7 +75,7 @@ async def client(tmp_path, monkeypatch):
     from planlint.config import settings
 
     monkeypatch.setattr(settings, "planlint_data_dir", tmp_path)
-    monkeypatch.setattr(settings, "planlint_fake_llm", True)
+    monkeypatch.setattr(settings, "planlint_offline_sample", True)
     app = create_app(repo=ApiFakeRepository(), embedder=FakeEmbedder())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:

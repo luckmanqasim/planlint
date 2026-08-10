@@ -31,7 +31,7 @@ from planlint.ingest.schedule import (
 )
 from planlint.ingest.sheet_type import SheetType, classify_sheet
 from planlint.ingest.vector_geometry import classify_opening_vector
-from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, fake_detect_from_labels
+from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, detect_from_labels
 from planlint.models import AssetType, BBox, Parameter, PhysicalAsset, RunEvent
 
 EmitFn = Callable[[RunEvent], Awaitable[None]]
@@ -133,7 +133,7 @@ def _analyze_page(page) -> tuple[str, list, list, bytes | None]:
     page_type = geometry.detect_pdf_type(page)
     primitives, labels = geometry.extract_primitives(page)
     png: bytes | None = None
-    if not settings.planlint_fake_llm:
+    if not settings.planlint_offline_sample:
         png = page.get_pixmap(matrix=pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)).tobytes("png")
     return page_type, primitives, labels, png
 
@@ -290,7 +290,7 @@ async def ingest_floorplan(
                 # Vertical dimensions (stair riser/tread) live here, not on plans.
                 page_type, _prim, _labels, png = await asyncio.to_thread(_analyze_page, page)
                 assets: list[PhysicalAsset] = []
-                if not settings.planlint_fake_llm and png is not None:
+                if not settings.planlint_offline_sample and png is not None:
                     text_layer = await asyncio.to_thread(page.get_text)
                     assets = await detect_elevation_page(png, text_layer, model)
                 await record_sheet(page_index, page, assets, None, None)
@@ -320,8 +320,8 @@ async def ingest_floorplan(
             # FLOOR_PLAN or OTHER (untitled): run the plan-view detector.
             page_type, primitives, labels, png = await asyncio.to_thread(_analyze_page, page)
 
-            if settings.planlint_fake_llm:
-                vlm_page: VlmPage = fake_detect_from_labels(labels)
+            if settings.planlint_offline_sample:
+                vlm_page: VlmPage = detect_from_labels(labels)
             else:
                 vlm_page = await detect_page(png, model)
 

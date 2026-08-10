@@ -21,7 +21,7 @@ from planlint.models import (
 )
 from planlint.verify.checker import check
 from planlint.verify.code_hunter import hunt
-from planlint.verify.fake_extractor import fake_extract
+from planlint.verify.offline_extractor import offline_extract
 from planlint.verify.rule_extractor import extract_constraints
 
 EmitFn = Callable[[RunEvent], Awaitable[None]]
@@ -35,8 +35,8 @@ async def _constraints_for(clause: dict, ancestors: list[dict], repo, text_model
     """Cached constraint extraction: the graph is the cache."""
     if await repo.constraints_extracted(clause["id"]):
         return await repo.get_constraints(clause["id"])
-    if settings.planlint_fake_llm:
-        constraints = fake_extract(clause)
+    if settings.planlint_offline_sample:
+        constraints = offline_extract(clause)
     else:
         constraints = await extract_constraints(clause, ancestors, text_model)
     await repo.save_constraints(constraints)
@@ -212,11 +212,11 @@ async def run_full(
 ) -> RunSummary:
     """Ingest anything pending, then verify. The entry point used by the API."""
     try:
-        if settings.planlint_fake_llm:
+        if settings.planlint_offline_sample:
             await emit(
                 RunEvent(
                     stage="ingest:spatial",
-                    message="PLANLINT_FAKE_LLM is enabled: offline demo mode — entities are "
+                    message="PLANLINT_OFFLINE_SAMPLE is enabled: offline demo mode — entities are "
                     "read from CAD text labels only. Real/scanned drawings will not be "
                     "analyzed; unset the flag and restart to use the vision model.",
                     level="warning",

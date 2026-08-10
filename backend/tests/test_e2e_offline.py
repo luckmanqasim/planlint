@@ -1,5 +1,5 @@
 """Golden end-to-end: real sample PDFs through the real ingestion code and
-verification loop, with the deterministic fake LLM (PLANLINT_FAKE_LLM mode).
+verification loop, in deterministic offline sample mode (PLANLINT_OFFLINE_SAMPLE).
 
 Asserts the structured verdict set — the fixture the README promises."""
 
@@ -15,8 +15,8 @@ SAMPLES = Path(__file__).resolve().parents[2] / "samples"
 
 
 @pytest.fixture(autouse=True)
-def fake_llm(monkeypatch):
-    monkeypatch.setattr(settings, "planlint_fake_llm", True)
+def offline_sample(monkeypatch):
+    monkeypatch.setattr(settings, "planlint_offline_sample", True)
     # This test pins the lightweight parser: its expectations describe the
     # regex path, and it must not depend on whether docling is installed.
     monkeypatch.setattr(settings, "planlint_semantic_parser", "simple")

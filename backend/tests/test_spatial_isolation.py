@@ -41,7 +41,7 @@ async def _ingest(pdf, fake_repo, emit):
 async def test_one_bad_page_does_not_abort_the_run(tmp_path, fake_repo, monkeypatch):
     pdf = tmp_path / "set.pdf"
     _blank_pdf(pdf, pages=3)
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     # Force the plan-view branch so detection runs on every (blank) page.
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
@@ -78,7 +78,7 @@ async def test_one_bad_page_does_not_abort_the_run(tmp_path, fake_repo, monkeypa
 async def test_all_pages_failing_still_completes(tmp_path, fake_repo, monkeypatch):
     pdf = tmp_path / "set.pdf"
     _blank_pdf(pdf, pages=3)
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def always_fail(png, model):

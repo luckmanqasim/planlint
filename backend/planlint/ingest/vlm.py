@@ -198,8 +198,8 @@ async def detect_page(image_png: bytes, model) -> VlmPage:
     return VlmPage(entities=scaled, scale_text=page.scale_text)
 
 
-def fake_detect_from_labels(labels) -> VlmPage:
-    """Deterministic stand-in for the VLM (PLANLINT_FAKE_LLM=1): derives
+def detect_from_labels(labels) -> VlmPage:
+    """Deterministic stand-in for the VLM (PLANLINT_OFFLINE_SAMPLE=1): derives
     entities from CAD text labels. Door labels look like 'D1 36\"'; a
     'FIRE EXIT' label marks a fire exit. Used by tests and the offline demo
     path — never in real deployments."""

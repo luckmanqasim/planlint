@@ -26,7 +26,7 @@ async def test_only_floor_plans_are_detected_schedules_are_parsed(
 ):
     pdf = tmp_path / "set.pdf"
     _blank_pdf(pdf, pages=3)
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
 
     # Page 0 foundation (skip), page 1 floor plan (detect), page 2 schedule (parse).
     order = [SheetType.FOUNDATION, SheetType.FLOOR_PLAN, SheetType.SCHEDULE]
@@ -89,7 +89,7 @@ async def test_phantom_space_without_name_area_or_walls_is_dropped(
     # A named room on the same page is kept.
     pdf = tmp_path / "plan.pdf"
     _blank_pdf(pdf, pages=1)
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
@@ -133,7 +133,7 @@ def _room_pdf(path):
 async def _ingest_entity(pdf, fake_repo, monkeypatch, entity, scale_text=None):
     """Ingest a single-page plan whose detector returns exactly `entity`; return
     all asset rows written to the repo."""
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
@@ -233,7 +233,7 @@ async def test_snapped_opening_prefers_printed_dimension(tmp_path, fake_repo, mo
     doc.save(str(pdf))
     doc.close()
 
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
@@ -263,7 +263,7 @@ async def test_ramp_slope_read_from_label(tmp_path, fake_repo, monkeypatch):
     doc.save(str(pdf))
     doc.close()
 
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
@@ -321,7 +321,7 @@ async def test_room_area_from_dimension_grid(tmp_path, fake_repo, monkeypatch):
     doc.save(str(pdf))
     doc.close()
 
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
@@ -357,7 +357,7 @@ async def test_joist_note_is_not_read_as_door_clear_width(tmp_path, fake_repo, m
     doc.save(str(pdf))
     doc.close()
 
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):
@@ -417,7 +417,7 @@ async def _ingest_two_page_set(tmp_path, fake_repo, monkeypatch, door_callout, s
     doc.save(str(pdf))
     doc.close()
 
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     order = [SheetType.FLOOR_PLAN, SheetType.SCHEDULE]
     seen = {"i": 0}
 
@@ -486,7 +486,7 @@ async def test_refuted_opening_is_dropped_and_snapped_uses_gap_width(tmp_path, f
     doc.save(str(pdf))
     doc.close()
 
-    monkeypatch.setattr(spatial.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
     monkeypatch.setattr(spatial, "classify_sheet", lambda page: SheetType.FLOOR_PLAN)
 
     async def fake_detect(png, model):

@@ -39,8 +39,9 @@ class Settings(BaseSettings):
     embed_model: str = "BAAI/bge-small-en-v1.5"  # 384-dim; must match the vector index
     embed_dimensions: int = 384
 
-    # Test seam: replaces all LLM agents with deterministic fakes (see tests/ and README dev notes)
-    planlint_fake_llm: bool = False
+    # Offline sample mode: swap the LLM agents for deterministic label/regex
+    # extraction so the bundled sample runs with no API key (see README, tests/).
+    planlint_offline_sample: bool = False
 
     cors_origins: str = "http://localhost:3000"
 

@@ -1,6 +1,6 @@
 """resolve_parser_mode: how `auto` picks a backend. LLM-first when a vision key
-is present, else Docling/simple; explicit modes pass through; fake-LLM forces
-simple. No network, no model calls."""
+is present, else Docling/simple; explicit modes pass through; offline sample mode
+forces simple. No network, no model calls."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ GOOGLE = "google:gemini-3-flash-preview"
 def _clear_keys(monkeypatch):
     for key in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(semantic.settings, "planlint_fake_llm", False)
+    monkeypatch.setattr(semantic.settings, "planlint_offline_sample", False)
 
 
 def test_auto_prefers_llm_when_vision_key_present(monkeypatch):
@@ -38,12 +38,12 @@ def test_explicit_modes_pass_through(monkeypatch):
     assert resolve_parser_mode("llm", GOOGLE) == "llm"
 
 
-def test_fake_llm_forces_simple(monkeypatch):
+def test_offline_sample_forces_simple(monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "x")
-    monkeypatch.setattr(semantic.settings, "planlint_fake_llm", True)
+    monkeypatch.setattr(semantic.settings, "planlint_offline_sample", True)
     assert resolve_parser_mode("auto", GOOGLE) == "simple"
     assert resolve_parser_mode("llm", GOOGLE) == "simple"
-    # a non-LLM explicit mode is still honored under fake-LLM
+    # a non-LLM explicit mode is still honored under offline sample mode
     assert resolve_parser_mode("docling", GOOGLE) == "docling"
 
 

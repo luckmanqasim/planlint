@@ -197,9 +197,9 @@ def resolve_parser_mode(configured: str, vision_model: str) -> str:
     """Resolve `auto` to a concrete backend. LLM-first: `auto` picks the LLM
     parser when a vision API key is configured (its per-document cost is one-time
     — the graph caches clauses), else Docling when installed, else the simple
-    text parser. Explicit modes pass through; PLANLINT_FAKE_LLM forces `simple`
+    text parser. Explicit modes pass through; PLANLINT_OFFLINE_SAMPLE forces `simple`
     so offline/CI never makes a model call."""
-    if settings.planlint_fake_llm:
+    if settings.planlint_offline_sample:
         return "simple" if configured in ("auto", "llm") else configured
     if configured != "auto":
         return configured
@@ -250,7 +250,7 @@ def parse_codebook_isolated(pdf_path: Path, mode: str = "auto") -> list[Regulati
     document in the parent.
 
     The simple parser is lightweight and stays in-process (also keeps tests
-    and PLANLINT_FAKE_LLM flows free of subprocess machinery).
+    and PLANLINT_OFFLINE_SAMPLE flows free of subprocess machinery).
 
     Parses are serialized: concurrent workers (a re-run racing an unfinished
     run, or two projects verifying at once) can push a loaded machine over
