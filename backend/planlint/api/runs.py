@@ -49,11 +49,16 @@ class RunManager:
 
     def _prune(self) -> None:
         now = time.monotonic()
-        expired = [
-            run_id
-            for run_id, run in self._runs.items()
-            if run.done and now - run.created_at > DONE_TTL_SECONDS
-        ]
+        expired = []
+        for run_id, run in self._runs.items():
+            if run.done and now - run.created_at > DONE_TTL_SECONDS:
+                expired.append(run_id)
+            elif not run.done and now - run.created_at > DONE_TTL_SECONDS:
+                # Run is stale/hung; cancel and evict it so it doesn't leak memory.
+                if run.task and not run.task.done():
+                    run.task.cancel()
+                expired.append(run_id)
+                
         for run_id in expired:
             del self._runs[run_id]
         if len(self._runs) >= MAX_RUNS:
