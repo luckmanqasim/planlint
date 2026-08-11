@@ -123,7 +123,7 @@ def build_transcription_agent(model) -> Agent:
         output_type=str,
         deps_type=_Verify,
         instructions=_INSTRUCTIONS,
-        model_settings={"temperature": 0.0, "thinking": False},
+        model_settings={"temperature": 0.0},
         retries=2,
     )
 

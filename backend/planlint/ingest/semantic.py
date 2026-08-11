@@ -189,8 +189,18 @@ _PROVIDER_KEYS = {
 
 
 def _has_vision_api_key(model: str) -> bool:
+    """True when the environment carries an API key for the model's provider.
+
+    Known providers are checked by name; unknown providers fall back to the
+    convention ``<PROVIDER>_API_KEY`` (e.g. ``MISTRAL_API_KEY`` for
+    ``mistral:...``).  Pydantic AI will raise at call time if the key is wrong.
+    """
     provider = model.split(":", 1)[0]
-    return any(os.environ.get(key) for key in _PROVIDER_KEYS.get(provider, ()))
+    keys = _PROVIDER_KEYS.get(provider)
+    if keys is not None:
+        return any(os.environ.get(key) for key in keys)
+    # Unknown provider: check the conventional <PROVIDER>_API_KEY env var.
+    return bool(os.environ.get(f"{provider.upper()}_API_KEY"))
 
 
 def resolve_parser_mode(configured: str, vision_model: str) -> str:

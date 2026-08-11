@@ -53,3 +53,13 @@ def test_provider_key_matching(monkeypatch):
     # google model, only an openai key set → no vision key for this provider
     monkeypatch.setattr(semantic, "_docling_available", lambda: False)
     assert resolve_parser_mode("auto", GOOGLE) == "simple"
+
+
+def test_auto_unknown_provider_with_key(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "x")
+    assert resolve_parser_mode("auto", "mistral:mistral-large") == "llm"
+
+
+def test_auto_unknown_provider_no_key(monkeypatch):
+    monkeypatch.setattr(semantic, "_docling_available", lambda: False)
+    assert resolve_parser_mode("auto", "mistral:mistral-large") == "simple"
