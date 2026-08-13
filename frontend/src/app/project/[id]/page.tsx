@@ -421,6 +421,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="max-h-[45%] shrink-0 overflow-y-auto">
             <AssetInspector
               asset={selectedAsset}
+              verified={sheets.some((s) => s.assets.some((a) => a.verdicts.length > 0))}
               onFocusClause={(regId) => {
                 setRightTab("clauses");
                 setFocusClauseId(regId);

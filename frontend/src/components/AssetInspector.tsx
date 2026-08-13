@@ -22,11 +22,13 @@ import type { Asset } from "@/lib/types";
 
 interface Props {
   asset: Asset | null;
+  /** True once at least one verification run has completed for this project. */
+  verified?: boolean;
   onFocusClause: (regulationId: string) => void;
   onViewClause?: (view: CodebookView) => void;
 }
 
-export default function AssetInspector({ asset, onFocusClause, onViewClause }: Props) {
+export default function AssetInspector({ asset, verified, onFocusClause, onViewClause }: Props) {
   if (!asset) {
     return (
       <div className="border-b border-edge px-4 py-3 text-xs text-ink-dim">
@@ -119,7 +121,9 @@ export default function AssetInspector({ asset, onFocusClause, onViewClause }: P
         </div>
       ) : (
         <p className="mt-2 text-xs text-ink-dim">
-          No governing clauses yet — run verification against a codebook.
+          {verified
+            ? "No applicable clauses found for this asset."
+            : "No governing clauses yet \u2014 run verification against a codebook."}
         </p>
       )}
     </div>
