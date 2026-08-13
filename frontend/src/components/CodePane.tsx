@@ -15,6 +15,7 @@ import {
   verdictLabel,
   VERDICT_SEVERITY,
 } from "@/lib/verdicts";
+import { assetDisplayName } from "@/lib/assets";
 import type { CodebookView } from "@/components/CodebookModal";
 import type { Asset, Clause, Doc, Sheet, VerdictEdge } from "@/lib/types";
 
@@ -162,7 +163,7 @@ export default function CodePane({
                   <div className="flex shrink-0 items-center gap-1">
                     {!verdict && governed && (
                       <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
-                        → {governed.asset.label || governed.asset.id}
+                        → {assetDisplayName(governed.asset)}
                       </span>
                     )}
                     {onViewClause && (
