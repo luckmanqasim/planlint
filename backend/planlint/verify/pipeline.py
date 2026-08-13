@@ -56,10 +56,10 @@ async def ingest_pending_documents(
             continue
         path = Path(document["path"])
         if document["kind"] == "codebook":
-            await emit(RunEvent(stage="ingest:semantic", message=f"Parsing {document['filename']}"))
             parser_mode = resolve_parser_mode(
                 settings.planlint_semantic_parser, vision_model
             )
+            await emit(RunEvent(stage="ingest:semantic", message=f"Parsing {document['filename']} (mode: {parser_mode})"))
             if parser_mode == "llm":
                 # Already-async per-page vision transcription (router: clean text
                 # pages skip the VLM), verified against the text layer / OCR.
@@ -164,15 +164,37 @@ async def run_verification(
                 )
                 counts[VerdictType.NEEDS_REVIEW.value] += 1
         except Exception as error:  # per-asset isolation
-            summary.errors.append(f"{asset.id}: {error}")
+            error_str = str(error)
+            summary.errors.append(f"{asset.id}: {error_str}")
             await emit(
                 RunEvent(
                     stage="verify",
-                    message=f"{asset.label or asset.id}: error — {error}",
+                    message=f"{asset.label or asset.id}: error — {error_str}",
                     level="error",
                     asset_id=asset.id,
                 )
             )
+            # Write a clean, user-facing reason to the verdict — the raw
+            # error details are already captured in the SSE log above.
+            if "404" in error_str or "NOT_FOUND" in error_str:
+                friendly = (
+                    "Verification failed: the configured model was not found. "
+                    "Check that the model name in .env includes the correct "
+                    "provider prefix (e.g. 'openai:gpt-5.6-sol')."
+                )
+            elif "401" in error_str or "403" in error_str or "UNAUTHENTICATED" in error_str:
+                friendly = (
+                    "Verification failed: the API key was rejected. "
+                    "Check that the correct key is set in .env for the "
+                    "configured provider."
+                )
+            elif "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                friendly = (
+                    "Verification failed: rate limit or quota exceeded. "
+                    "Wait a moment and retry, or check your provider billing."
+                )
+            else:
+                friendly = "Verification could not be completed due to an internal error."
             try:
                 fallback = await hunt(asset, project_id, repo, embedder, k=1)
                 if fallback:
@@ -182,7 +204,7 @@ async def run_verification(
                         run_id,
                         CheckResult(
                             verdict=VerdictType.NEEDS_REVIEW,
-                            reason=f"Verification error: {error}",
+                            reason=friendly,
                         ),
                     )
                     counts[VerdictType.NEEDS_REVIEW.value] += 1
