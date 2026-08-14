@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "planlint123"
 
-    # Any Pydantic AI model string works, e.g. "openai:gpt-5.6", "anthropic:claude-sonnet-5"
-    planlint_vision_model: str = "google:gemini-3.6-flash"
-    planlint_text_model: str = "google:gemini-3.6-flash"
+    # Any Pydantic AI model string works, e.g. "google:gemini-3.6-flash", "anthropic:claude-sonnet-5"
+    planlint_vision_model: str = "openai:gpt-5.6-sol"
+    planlint_text_model: str = "openai:gpt-5.6-sol"
 
     # auto = LLM-first: the vision model transcribes each page when a vision API
     # key is set (clean text pages skip the VLM; cost is one-time — the graph
