@@ -19,6 +19,8 @@ import { assetDisplayName } from "@/lib/assets";
 import type { CodebookView } from "@/components/CodebookModal";
 import type { Asset, Clause, Doc, Sheet, VerdictEdge } from "@/lib/types";
 
+const MAX_ASSET_CHIPS = 6; // cap the "applies to" strip; rest collapse to "+N more"
+
 interface Props {
   clauses: Clause[];
   documents: Doc[];
@@ -52,21 +54,34 @@ export default function CodePane({
     [selectedAsset],
   );
 
-  // regulation_id -> the (worst) asset on the current sheet it governs.
+  // regulation_id -> every asset on the current sheet it governs, worst-first
+  // (one clause can govern many assets — e.g. a door-width rule over every door).
   const assetsByRegulation = useMemo(() => {
-    const map = new Map<string, { asset: Asset; verdict: VerdictEdge }>();
+    const byReg = new Map<string, Map<string, { asset: Asset; verdict: VerdictEdge }>>();
     for (const asset of sheet?.assets ?? []) {
       for (const verdict of asset.verdicts) {
-        const existing = map.get(verdict.regulation_id);
-        if (
-          !existing ||
-          VERDICT_SEVERITY[verdict.verdict] < VERDICT_SEVERITY[existing.verdict.verdict]
-        ) {
-          map.set(verdict.regulation_id, { asset, verdict });
+        let perAsset = byReg.get(verdict.regulation_id);
+        if (!perAsset) {
+          perAsset = new Map();
+          byReg.set(verdict.regulation_id, perAsset);
+        }
+        const existing = perAsset.get(asset.id);
+        // one edge per asset — keep its worst verdict if runs left several.
+        if (!existing || VERDICT_SEVERITY[verdict.verdict] < VERDICT_SEVERITY[existing.verdict.verdict]) {
+          perAsset.set(asset.id, { asset, verdict });
         }
       }
     }
-    return map;
+    const out = new Map<string, { asset: Asset; verdict: VerdictEdge }[]>();
+    for (const [reg, perAsset] of byReg) {
+      out.set(
+        reg,
+        [...perAsset.values()].sort(
+          (a, b) => VERDICT_SEVERITY[a.verdict.verdict] - VERDICT_SEVERITY[b.verdict.verdict],
+        ),
+      );
+    }
+    return out;
   }, [sheet]);
 
   const codebooks = useMemo(
@@ -130,7 +145,8 @@ export default function CodePane({
           {group.clauses.map((clause) => {
             const verdict = selectedVerdicts.get(clause.id);
             const governed = assetsByRegulation.get(clause.id);
-            const clickable = governed !== undefined;
+            const worst = governed?.[0]?.asset; // worst-first: the row selects this one
+            const clickable = worst !== undefined;
             return (
               <div
                 key={`${groupIndex}-${clause.id}`}
@@ -139,13 +155,13 @@ export default function CodePane({
                 }}
                 role={clickable ? "button" : undefined}
                 tabIndex={clickable ? 0 : undefined}
-                onClick={clickable ? () => onSelectAsset(governed.asset) : undefined}
+                onClick={clickable ? () => onSelectAsset(worst) : undefined}
                 onKeyDown={
                   clickable
                     ? (e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          onSelectAsset(governed.asset);
+                          onSelectAsset(worst);
                         }
                       }
                     : undefined
@@ -163,11 +179,6 @@ export default function CodePane({
                     <span className="font-mono">{clause.clause_id}</span> {clause.title}
                   </h4>
                   <div className="flex shrink-0 items-center gap-1">
-                    {!verdict && governed && (
-                      <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
-                        → {assetDisplayName(governed.asset)}
-                      </span>
-                    )}
                     {onViewClause && (
                       <button
                         onClick={(e) => {
@@ -206,6 +217,36 @@ export default function CodePane({
                     )}
                     {verdict.reason && (
                       <div className="mt-1 text-xs text-ink-dim">{verdict.reason}</div>
+                    )}
+                  </div>
+                )}
+
+                {/* Every asset this clause governs — the mirror of the inspector's
+                    "governing clauses" list. Each chip selects that asset. */}
+                {governed && governed.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <span className="text-[10px] uppercase tracking-wide text-ink-dim">
+                      Applies to
+                    </span>
+                    {governed.slice(0, MAX_ASSET_CHIPS).map(({ asset, verdict: v }) => (
+                      <button
+                        key={asset.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectAsset(asset);
+                        }}
+                        title={`Select ${assetDisplayName(asset)}`}
+                        className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium ${verdictBadgeClass(
+                          v.verdict,
+                        )} ${asset.id === selectedAsset?.id ? "ring-1 ring-accent" : ""}`}
+                      >
+                        {verdictGlyph(v.verdict)} {assetDisplayName(asset)}
+                      </button>
+                    ))}
+                    {governed.length > MAX_ASSET_CHIPS && (
+                      <span className="text-xs text-ink-dim">
+                        +{governed.length - MAX_ASSET_CHIPS} more
+                      </span>
                     )}
                   </div>
                 )}
