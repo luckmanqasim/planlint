@@ -9,7 +9,12 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 
 import { api } from "@/lib/api";
 import CanvasLegend from "@/components/CanvasLegend";
-import { verdictGlyph, verdictColor, worstBoxVerdict } from "@/lib/verdicts";
+import {
+  prefersReducedMotion,
+  verdictColor,
+  verdictGlyph,
+  worstBoxVerdict,
+} from "@/lib/verdicts";
 import {
   assetDisplayName,
   assetPrimaryMeasure,
@@ -186,7 +191,9 @@ export default function PlanViewer({
 
   // Draw verdict boxes. Big boxes first so small assets stay clickable and
   // visible on top; labels only where they help (selected, hovered, or
-  // wide-enough boxes) to avoid the chip pile-up on dense plans.
+  // wide-enough boxes) to avoid the chip pile-up on dense plans. When an asset
+  // is selected, the rest dim to a "spotlight" and the selection is redrawn
+  // last, on top, with a glow so it pops regardless of the big-first z-order.
   useEffect(() => {
     const overlay = overlayRef.current;
     if (!overlay || !render) return;
@@ -195,9 +202,11 @@ export default function PlanViewer({
     ctx.setTransform(render.dpr, 0, 0, render.dpr, 0, 0);
     ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-    const ordered = [...sheet.assets].sort((a, b) => boxArea(b) - boxArea(a));
-    for (const asset of ordered) {
-      if (isAssetHidden(asset, hidden)) continue; // toggled off in the legend
+    const hasSelection = selectedAssetId != null;
+
+    // Draw one asset. `dim` fades everything except the spotlight; `selected`
+    // brightens the fill and adds a glow ring.
+    const drawAsset = (asset: Asset, dim: boolean, selected: boolean) => {
       const verdict = worstBoxVerdict(asset.verdicts);
       const color = verdict ? verdictColor(verdict) : UNVERDICTED;
       const [x0, y0, x1, y1] = asset.bbox;
@@ -205,28 +214,35 @@ export default function PlanViewer({
       const y = (y0 - BOX_PAD) * render.scale;
       const w = (x1 - x0 + BOX_PAD * 2) * render.scale;
       const h = (y1 - y0 + BOX_PAD * 2) * render.scale;
-      const selected = asset.id === selectedAssetId;
-      const hovered = asset.id === hoverId;
+      const hovered = asset.id === hoverId && !selected;
+      const dimFactor = dim ? 0.4 : 1;
 
       // Space-covering assets (rooms/corridors) span the drawing — filling
       // them all would wash the plan out, so they tint only when active.
       const spanning = asset.type === "room" || asset.type === "corridor";
       if (!spanning || selected || hovered) {
-        ctx.globalAlpha = selected ? 0.22 : hovered ? 0.14 : 0.07;
+        ctx.globalAlpha = (selected ? 0.28 : hovered ? 0.14 : 0.07) * dimFactor;
         ctx.fillStyle = color;
         ctx.fillRect(x, y, w, h);
-        ctx.globalAlpha = 1;
+      }
+      ctx.globalAlpha = dimFactor;
+      if (selected) {
+        ctx.shadowColor = color; // glow ring around the spotlight
+        ctx.shadowBlur = 12;
       }
       ctx.lineWidth = selected ? 3 : hovered ? 2.25 : spanning ? 1 : 1.25;
       ctx.strokeStyle = color;
       if (spanning && !selected && !hovered) ctx.setLineDash([6, 4]);
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "transparent";
 
       // Full chip on select/hover/wide; otherwise a tiny type code so every
       // box still says what it is (fixes blank unnamed boxes). Name falls back
       // to the type word, and the key measurement rides alongside.
       const showChip = selected || hovered || w >= LABEL_MIN_WIDTH_PX;
+      ctx.globalAlpha = dim ? 0.5 : 1;
       if (showChip) {
         const measure = assetPrimaryMeasure(asset);
         const text =
@@ -252,8 +268,51 @@ export default function PlanViewer({
         ctx.fillStyle = "#0b0d12"; // --color-surface-0
         ctx.fillText(code, x + 3, y + 9.5);
       }
+      ctx.globalAlpha = 1;
+    };
+
+    const ordered = [...sheet.assets].sort((a, b) => boxArea(b) - boxArea(a));
+    let selected: Asset | null = null;
+    for (const asset of ordered) {
+      if (isAssetHidden(asset, hidden)) continue; // toggled off in the legend
+      if (asset.id === selectedAssetId) {
+        selected = asset; // defer to the on-top pass
+        continue;
+      }
+      // Dim the rest only while spotlighting, and keep a hovered box lit.
+      drawAsset(asset, hasSelection && asset.id !== hoverId, false);
     }
+    if (selected) drawAsset(selected, false, true);
   }, [sheet.assets, selectedAssetId, hoverId, render, hidden]);
+
+  // Center the selected asset when it isn't already fully in view — so a
+  // selection made from the clause pane visibly brings its box into frame.
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper || !render || !selectedAssetId) return;
+    const asset = sheet.assets.find((a) => a.id === selectedAssetId);
+    if (!asset) return;
+    const [x0, y0, x1, y1] = asset.bbox;
+    const left = (x0 - BOX_PAD) * render.scale;
+    const top = (y0 - BOX_PAD) * render.scale;
+    const right = (x1 + BOX_PAD) * render.scale;
+    const bottom = (y1 + BOX_PAD) * render.scale;
+    const viewL = wrapper.scrollLeft;
+    const viewT = wrapper.scrollTop;
+    if (
+      left >= viewL &&
+      right <= viewL + wrapper.clientWidth &&
+      top >= viewT &&
+      bottom <= viewT + wrapper.clientHeight
+    ) {
+      return; // already in frame — don't yank the plan around
+    }
+    wrapper.scrollTo({
+      left: Math.max(0, (left + right) / 2 - wrapper.clientWidth / 2),
+      top: Math.max(0, (top + bottom) / 2 - wrapper.clientHeight / 2),
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }, [selectedAssetId, render, sheet.assets]);
 
   const toSheetCoords = useCallback(
     (clientX: number, clientY: number) => {

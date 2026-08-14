@@ -44,9 +44,12 @@ export default function AssetInspector({ asset, verified, onFocusClause, onViewC
   );
 
   return (
-    <div className="border-b border-edge px-4 py-3">
+    <div className="border-b border-edge border-l-2 border-l-accent bg-surface-2 px-4 py-3 shadow-sm">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent">
+        Selected asset
+      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-medium text-ink">{assetDisplayName(asset)}</h3>
+        <h3 className="text-base font-semibold text-ink">{assetDisplayName(asset)}</h3>
         <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-ink-dim">
           {assetTypeLabel(asset.type)}
         </span>

@@ -150,11 +150,13 @@ export default function CodePane({
                       }
                     : undefined
                 }
-                className={`border-b border-edge px-4 py-3 scroll-mt-10 [content-visibility:auto] [contain-intrinsic-size:auto_120px] ${
+                className={`border-b border-edge px-4 py-3 scroll-mt-10 transition-opacity [content-visibility:auto] [contain-intrinsic-size:auto_120px] ${
                   verdict
                     ? `border-l-2 ${verdictCardClass(verdict.verdict)}`
                     : "border-l-2 border-l-transparent"
-                } ${clickable ? "cursor-pointer hover:bg-surface-2 focus:outline-2 focus:-outline-offset-2 focus:outline-accent" : ""}`}
+                } ${clickable ? "cursor-pointer hover:bg-surface-2 focus:outline-2 focus:-outline-offset-2 focus:outline-accent" : ""} ${
+                  selectedAsset && !verdict ? "opacity-40" : ""
+                }`}
               >
                 <div className="flex items-baseline justify-between gap-2">
                   <h4 className="font-medium">
