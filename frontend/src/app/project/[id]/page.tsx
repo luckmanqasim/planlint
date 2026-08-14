@@ -335,13 +335,13 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
       {/* Workspace */}
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-        <div className="overflow-y-auto border-r border-edge bg-surface-1">
+        <div className="overflow-x-hidden overflow-y-auto border-r border-edge bg-surface-1">
           {sheets.length > 1 && (
             <div
               role="tablist"
               aria-label="Sheets"
               onKeyDown={onSheetKeys}
-              className="sticky top-0 z-10 flex gap-1 border-b border-edge bg-surface-1/95 px-3 py-2 backdrop-blur"
+              className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-edge bg-surface-1/95 px-3 py-2 backdrop-blur"
             >
               {sheets.map((s, i) => {
                 const fails = s.assets.filter((a) =>
@@ -353,7 +353,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                     role="tab"
                     aria-selected={i === sheetIndex}
                     onClick={() => switchSheet(i)}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs ${
+                    className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1 text-xs whitespace-nowrap ${
                       i === sheetIndex
                         ? "bg-surface-2 font-medium text-ink"
                         : "text-ink-dim hover:bg-surface-2/60 hover:text-ink"
