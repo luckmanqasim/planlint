@@ -56,6 +56,26 @@ def to_square_metres(value: float, unit: str) -> float | None:
     return value * factor
 
 
+# Natural-language phrase for each measurable parameter, so a user-facing reason
+# reads "Clear width is 30 inches…", never the raw field name "clear_width".
+_PARAM_PHRASE: dict[Parameter, str] = {
+    Parameter.AREA: "floor area",
+    Parameter.CLEAR_WIDTH: "clear width",
+    Parameter.OPENING_HEIGHT: "opening height",
+    Parameter.THRESHOLD_HEIGHT: "threshold height",
+    Parameter.MANEUVERING_CLEARANCE: "maneuvering clearance",
+    Parameter.SLOPE: "slope",
+    Parameter.RISER_HEIGHT: "riser height",
+    Parameter.TREAD_DEPTH: "tread depth",
+    Parameter.LANDING_LENGTH: "landing length",
+}
+
+
+def _param_phrase(parameter: Parameter) -> str:
+    """Human phrase for a parameter; falls back to de-underscoring unknown keys."""
+    return _PARAM_PHRASE.get(parameter, parameter.value.replace("_", " "))
+
+
 def _review(reason: str, measured: float | None = None, required: str | None = None) -> CheckResult:
     return CheckResult(
         verdict=VerdictType.NEEDS_REVIEW, measured=measured, required=required, reason=reason
@@ -105,6 +125,8 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
             f"Asset has no '{constraint.parameter.value}' measurement",
         )
 
+    phrase = _param_phrase(constraint.parameter).capitalize()
+
     if constraint.operator == Operator.MIN:
         required_str = f">= {required_in:g} in"
         if measured >= required_in:
@@ -112,14 +134,14 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
                 verdict=VerdictType.COMPLIES_WITH,
                 measured=measured,
                 required=required_str,
-                reason=f"{constraint.parameter.value} is {measured:g} in; code requires {required_str}",
+                reason=f"{phrase} is {measured:g} in; code requires {required_str}",
             )
         return CheckResult(
             verdict=VerdictType.VIOLATES,
             measured=measured,
             required=required_str,
             reason=(
-                f"{constraint.parameter.value} is {measured:g} inches, "
+                f"{phrase} is {measured:g} inches, "
                 f"code requires {required_in:g} inches minimum"
             ),
         )
@@ -131,14 +153,14 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
                 verdict=VerdictType.COMPLIES_WITH,
                 measured=measured,
                 required=required_str,
-                reason=f"{constraint.parameter.value} is {measured:g} in; code requires {required_str}",
+                reason=f"{phrase} is {measured:g} in; code requires {required_str}",
             )
         return CheckResult(
             verdict=VerdictType.VIOLATES,
             measured=measured,
             required=required_str,
             reason=(
-                f"{constraint.parameter.value} is {measured:g} inches, "
+                f"{phrase} is {measured:g} inches, "
                 f"code allows {required_in:g} inches maximum"
             ),
         )
@@ -155,14 +177,14 @@ def check(asset: PhysicalAsset, constraint: Constraint) -> CheckResult | None:
                 verdict=VerdictType.COMPLIES_WITH,
                 measured=measured,
                 required=required_str,
-                reason=f"{constraint.parameter.value} is {measured:g} in, within {required_str}",
+                reason=f"{phrase} is {measured:g} in, within {required_str}",
             )
         return CheckResult(
             verdict=VerdictType.VIOLATES,
             measured=measured,
             required=required_str,
             reason=(
-                f"{constraint.parameter.value} is {measured:g} inches, "
+                f"{phrase} is {measured:g} inches, "
                 f"code requires between {required_in:g} and {high_in:g} inches"
             ),
         )
