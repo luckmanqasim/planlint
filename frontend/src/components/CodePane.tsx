@@ -15,7 +15,7 @@ import {
   verdictLabel,
   VERDICT_SEVERITY,
 } from "@/lib/verdicts";
-import { assetDisplayName } from "@/lib/assets";
+import { assetDisplayName, assetPrimaryMeasure } from "@/lib/assets";
 import type { CodebookView } from "@/components/CodebookModal";
 import type { Asset, Clause, Doc, Sheet, VerdictEdge } from "@/lib/types";
 
@@ -228,21 +228,27 @@ export default function CodePane({
                     <span className="text-[10px] uppercase tracking-wide text-ink-dim">
                       Applies to
                     </span>
-                    {governed.slice(0, MAX_ASSET_CHIPS).map(({ asset, verdict: v }) => (
-                      <button
-                        key={asset.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectAsset(asset);
-                        }}
-                        title={`Select ${assetDisplayName(asset)}`}
-                        className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium ${verdictBadgeClass(
-                          v.verdict,
-                        )} ${asset.id === selectedAsset?.id ? "ring-1 ring-accent" : ""}`}
-                      >
-                        {verdictGlyph(v.verdict)} {assetDisplayName(asset)}
-                      </button>
-                    ))}
+                    {governed.slice(0, MAX_ASSET_CHIPS).map(({ asset, verdict: v }) => {
+                      // measurement disambiguates otherwise-identical labels
+                      // (five unnamed doors read as "Door · 30″", "Door · 36″", …)
+                      const measure = assetPrimaryMeasure(asset);
+                      return (
+                        <button
+                          key={asset.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectAsset(asset);
+                          }}
+                          title={`Select ${assetDisplayName(asset)}`}
+                          className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium ${verdictBadgeClass(
+                            v.verdict,
+                          )} ${asset.id === selectedAsset?.id ? "ring-1 ring-accent" : ""}`}
+                        >
+                          {verdictGlyph(v.verdict)} {assetDisplayName(asset)}
+                          {measure && <span className="font-mono opacity-80">· {measure}</span>}
+                        </button>
+                      );
+                    })}
                     {governed.length > MAX_ASSET_CHIPS && (
                       <span className="text-xs text-ink-dim">
                         +{governed.length - MAX_ASSET_CHIPS} more
