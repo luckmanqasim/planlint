@@ -76,6 +76,24 @@ class PhysicalAsset(BaseModel):
     measurements: dict[Parameter, float] = Field(default_factory=dict)
 
 
+class SheetReference(BaseModel):
+    """A cross-sheet reference marker on a drawing — a section (`1/A3.0`), detail
+    (`3/A1.7`), or elevation callout linking a plan location to another sheet.
+
+    The VLM classifies the marker and reads its target; the target is grounded
+    against the page text layer and the sheet registry before it reaches the graph,
+    so a hallucinated or mistyped sheet id never becomes a link.
+    """
+
+    id: str = Field(default_factory=lambda: _new_id("ref"))
+    kind: Literal["section", "detail", "elevation"]
+    detail_num: str = ""  # the 'N' in 'N/SHEET' (a detail/view number on the target)
+    target_sheet_number: str  # e.g. "A3.0"
+    bbox: BBox
+    source_asset_id: str | None = None  # the nearest plan asset, when one is close
+    confidence: float = 1.0
+
+
 class RegulationClause(BaseModel):
     """One clause of a codebook, positioned in its section hierarchy."""
 

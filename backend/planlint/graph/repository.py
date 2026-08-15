@@ -17,6 +17,7 @@ from planlint.models import (
     Constraint,
     PhysicalAsset,
     RegulationClause,
+    SheetReference,
     VerdictType,
 )
 
@@ -182,12 +183,15 @@ class GraphRepository:
         height: float,
         scale_text: str | None,
         scale_in_per_point: float | None,
+        sheet_number: str | None = None,
+        title: str | None = None,
     ) -> None:
         await self._run(
             "MATCH (d:Document {id: $document_id}) "
             "MERGE (d)-[:HAS_SHEET]->(s:Sheet {id: $id}) "
             "SET s.page_number = $page_number, s.width = $width, s.height = $height, "
             "s.scale_text = $scale_text, s.scale_in_per_point = $scale_in_per_point, "
+            "s.sheet_number = $sheet_number, s.title = $title, "
             "s.project_id = d.project_id",
             document_id=document_id,
             id=sheet_id,
@@ -196,6 +200,8 @@ class GraphRepository:
             height=height,
             scale_text=scale_text,
             scale_in_per_point=scale_in_per_point,
+            sheet_number=sheet_number,
+            title=title,
         )
 
     async def set_sheet_scale(
@@ -253,6 +259,38 @@ class GraphRepository:
             asset["sheet_id"] = row["sheet_id"]
             out.append(asset)
         return out
+
+    # ---------------------------------------------------------- references
+
+    async def save_references(
+        self, document_id: str, references: list[SheetReference]
+    ) -> None:
+        """Link each grounded, asset-bound reference to its target sheet (matched
+        by sheet_number within the document). A reference whose target sheet isn't
+        in the document, or which points at the asset's own sheet, is skipped. The
+        edge is a plain relationship, so DETACH DELETE of either end removes it."""
+        await self._run(
+            "UNWIND $refs AS ref "
+            "MATCH (a:PhysicalAsset {id: ref.source_asset_id}) "
+            "MATCH (:Document {id: $document_id})-[:HAS_SHEET]->"
+            "(target:Sheet {sheet_number: ref.target}) "
+            "MATCH (src:Sheet)-[:CONTAINS]->(a) WHERE target <> src "
+            "MERGE (a)-[r:REFERENCES {detail_num: ref.detail_num, "
+            "target_sheet: ref.target}]->(target) "
+            "SET r.kind = ref.kind, r.confidence = ref.confidence",
+            document_id=document_id,
+            refs=[
+                {
+                    "source_asset_id": r.source_asset_id,
+                    "target": r.target_sheet_number,
+                    "detail_num": r.detail_num,
+                    "kind": r.kind,
+                    "confidence": r.confidence,
+                }
+                for r in references
+                if r.source_asset_id
+            ],
+        )
 
     # ------------------------------------------------------------- clauses
 
@@ -438,7 +476,10 @@ class GraphRepository:
             "clause_id: r.clause_id, clause_page: r.page, clause_bbox: r.bbox, "
             "clause_document_id: r.document_id} END) AS verdicts "
             "RETURN s.id AS sheet_id, a { .* } AS asset, "
-            "[x IN verdicts WHERE x IS NOT NULL] AS verdicts",
+            "[x IN verdicts WHERE x IS NOT NULL] AS verdicts, "
+            "[(a)-[ref:REFERENCES]->(t:Sheet) | {kind: ref.kind, "
+            "detail_num: ref.detail_num, target_sheet_number: t.sheet_number, "
+            "target_sheet_id: t.id, confidence: ref.confidence}] AS references",
             pid=project_id,
             run_id=run_id,
         )
@@ -448,6 +489,7 @@ class GraphRepository:
             asset["measurements"] = json.loads(asset.get("measurements") or "{}")
             asset.pop("embedding", None)
             asset["verdicts"] = row["verdicts"]
+            asset["references"] = row["references"]
             assets_by_sheet.setdefault(row["sheet_id"], []).append(asset)
 
         sheets = []

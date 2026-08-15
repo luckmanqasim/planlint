@@ -15,6 +15,14 @@ export interface VerdictEdge {
   clause_document_id: string;
 }
 
+export interface SheetRef {
+  kind: "section" | "detail" | "elevation";
+  detail_num: string;
+  target_sheet_number: string | null;
+  target_sheet_id: string;
+  confidence?: number;
+}
+
 export interface Asset {
   id: string;
   type: string;
@@ -24,6 +32,7 @@ export interface Asset {
   source: "vector-snapped" | "raster-snapped" | "vlm-only" | "schedule";
   measurements: Record<string, number>;
   verdicts: VerdictEdge[];
+  references: SheetRef[];
 }
 
 export interface Sheet {
@@ -34,6 +43,8 @@ export interface Sheet {
   height: number;
   scale_text: string | null;
   scale_in_per_point: number | null;
+  sheet_number: string | null;
+  title: string | null;
   assets: Asset[];
 }
 
