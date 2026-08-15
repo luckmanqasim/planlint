@@ -314,6 +314,16 @@ _OFFSET_TOL_PT = 2.0  # lines within this coordinate distance are the same wall 
 MIN_OPENING_PT = 8.0   # a gap smaller than this is a joint, not an opening
 MAX_OPENING_PT = 240.0 # a gap larger than this spans a room, not one opening
 
+# Two guards stop a door/window snapping to a whole wall section: a wall gap is
+# rejected when it is wider than SLACK × the VLM box (a far larger feature the box
+# didn't claim) OR, when the scale is known, wider than _MAX_OPENING_IN in reality
+# (the scale-free MAX_OPENING_PT alone lets a whole wall through at a small scale).
+OPENING_SIZE_SLACK = 3.0
+_MAX_OPENING_IN = 200.0      # ~16.7 ft — allows the widest garage door, not a wall
+OPENING_THICK_MAX_PT = 20.0  # fallback cap on an opening box's wall-thickness
+_WALL_PAIR_BAND_PT = 24.0    # the opposite wall face sits within this of the run
+_OPENING_REPOSITION_PT = 24.0  # a gap this near a mis-placed box may host it
+
 
 @dataclass(frozen=True)
 class OpeningResult:
@@ -414,16 +424,75 @@ def _gap_is_occupied(box: BBox, primitives: list[Primitive]) -> bool:
 _RUN_NEAR_PT = 12.0  # a wall run this close to the box (perpendicular) hosts the opening
 
 
+def _candidate_gaps(
+    run: WallRun, span_lo: float, span_hi: float, vlm_size: float,
+    scale: float | None = None,
+) -> list[tuple[float, float, float]]:
+    """Corroborated opening gaps in `run`, as (gap_lo, gap_hi, distance): distance
+    0 means the gap overlaps the claimed span. A gap is dropped when its size is
+    implausible, wider than OPENING_SIZE_SLACK × the VLM box (a larger feature the
+    box didn't claim), or — when the scale is known — wider than _MAX_OPENING_IN in
+    reality. Together these keep a door from snapping to a whole wall."""
+    out: list[tuple[float, float, float]] = []
+    ivs = sorted(run.intervals)
+    for (_, a_hi), (b_lo, _) in zip(ivs, ivs[1:]):
+        gap_lo, gap_hi = a_hi, b_lo
+        width = gap_hi - gap_lo
+        if not (MIN_OPENING_PT <= width <= MAX_OPENING_PT):
+            continue
+        if width > OPENING_SIZE_SLACK * vlm_size + _OFFSET_TOL_PT:
+            continue
+        if scale is not None and width * scale > _MAX_OPENING_IN:
+            continue
+        distance = max(gap_lo - span_hi, span_lo - gap_hi, 0.0)
+        out.append((gap_lo, gap_hi, distance))
+    return out
+
+
+def _wall_thickness_at(
+    run: WallRun, gap: tuple[float, float], runs: list[WallRun], fallback_cross: float
+) -> float:
+    """Thickness of the wall the opening cuts through: the distance to the nearest
+    parallel wall run (the wall's other face) that runs alongside the gap, within
+    _WALL_PAIR_BAND_PT. Falls back to the capped VLM cross-dimension when the wall
+    is drawn as a single line, so the box hugs the wall instead of the swing arc."""
+    gap_lo, gap_hi = gap
+    nearest: float | None = None
+    for other in runs:
+        if other.orient != run.orient or other.offset == run.offset:
+            continue
+        distance = abs(other.offset - run.offset)
+        if not (_AXIS_TOL_PT < distance <= _WALL_PAIR_BAND_PT):
+            continue
+        # the other face must run alongside the opening (same wall), not be an
+        # unrelated parallel line elsewhere on the sheet.
+        alongside = any(
+            lo < gap_hi + _WALL_PAIR_BAND_PT and hi > gap_lo - _WALL_PAIR_BAND_PT
+            for lo, hi in other.intervals
+        )
+        if alongside and (nearest is None or distance < nearest):
+            nearest = distance
+    if nearest is not None:
+        return nearest
+    return max(min(fallback_cross, OPENING_THICK_MAX_PT), MIN_OPENING_PT)
+
+
 def classify_opening_vector(
-    vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = ()
+    vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = (),
+    scale: float | None = None,
 ) -> OpeningResult:
     """Judge a claimed door/window box against vector wall geometry.
 
-    Only positive solid evidence (hatching/fill = a chimney or pier) refutes an
-    opening; an un-cut or unconfirmable wall yields 'unknown' (kept for review),
-    never a drop, so a real door drawn over a continuous wall is not lost."""
+    The snapped box is grounded in the flanked wall gap, but only when that gap is
+    comparable in size to the VLM box and plausible for a real opening (a far larger
+    gap is a different feature, not this opening); its thickness comes from the wall,
+    not the swing-inflated box. A box that landed beside the opening is repositioned
+    onto a single nearby gap. Only positive solid evidence (hatching/fill = a chimney
+    or pier) refutes an opening; an un-cut or unconfirmable wall yields 'unknown'
+    (kept for review), never a drop, so a real door over a continuous wall isn't lost."""
     x0, y0, x1, y1 = vlm_box
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    vlm_size = max(x1 - x0, y1 - y0)
     runs = build_wall_runs(primitives, labels)
 
     best: tuple[float, WallRun, tuple[float, float], str] | None = None
@@ -431,22 +500,32 @@ def classify_opening_vector(
         if run.orient == "h":
             if abs(run.offset - cy) > (y1 - y0) / 2 + _RUN_NEAR_PT:
                 continue
-            gap = _gap_in_run(run, x0, x1)
-            axis = "x"
+            span_lo, span_hi, axis = x0, x1, "x"
         else:
             if abs(run.offset - cx) > (x1 - x0) / 2 + _RUN_NEAR_PT:
                 continue
-            gap = _gap_in_run(run, y0, y1)
-            axis = "y"
-        if gap is None:
-            continue
-        dist = abs(run.offset - (cy if run.orient == "h" else cx))
-        if best is None or dist < best[0]:
-            best = (dist, run, gap, axis)
+            span_lo, span_hi, axis = y0, y1, "y"
+
+        candidates = _candidate_gaps(run, span_lo, span_hi, vlm_size, scale)
+        overlapping = [g for g in candidates if g[2] == 0.0]
+        if overlapping:  # the box sits over a real gap — take the best-overlapping
+            gap_lo, gap_hi, _ = max(
+                overlapping, key=lambda g: min(g[1], span_hi) - max(g[0], span_lo)
+            )
+        else:  # box beside the opening: reposition only onto a *single* near gap
+            near = [g for g in candidates if g[2] <= _OPENING_REPOSITION_PT]
+            if len(near) != 1:
+                continue
+            gap_lo, gap_hi, _ = near[0]
+
+        wall_dist = abs(run.offset - (cy if run.orient == "h" else cx))
+        if best is None or wall_dist < best[0]:
+            best = (wall_dist, run, (gap_lo, gap_hi), axis)
 
     if best is not None:
         _, run, (gap_lo, gap_hi), axis = best
-        thickness = max(y1 - y0, MIN_OPENING_PT) if axis == "x" else max(x1 - x0, MIN_OPENING_PT)
+        vlm_cross = (y1 - y0) if axis == "x" else (x1 - x0)
+        thickness = _wall_thickness_at(run, (gap_lo, gap_hi), runs, vlm_cross)
         if axis == "x":
             bbox = (gap_lo, run.offset - thickness / 2, gap_hi, run.offset + thickness / 2)
         else:

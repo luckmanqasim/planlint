@@ -380,7 +380,9 @@ async def ingest_floorplan(
                         source = "vector-snapped" if snapped else "vlm-only"
                         confidence = 0.95 if snapped else 0.6
                     elif entity.entity_type in _OPENING_TYPES:
-                        opening_result = classify_opening_vector(entity.box, primitives, labels)
+                        opening_result = classify_opening_vector(
+                            entity.box, primitives, labels, scale
+                        )
                         if opening_result.kind == "refuted":
                             continue  # not a real opening (solid wall / chimney)
                         if opening_result.kind == "snapped":

@@ -107,8 +107,10 @@ For each entity return:
   the entity's FULL PHYSICAL EXTENT:
   * room: the entire interior from wall to wall — never just the room's
     name text. A room's box is usually large.
-  * door / window / garage door: the whole opening across the wall
-    thickness.
+  * door / window / garage door: the wall opening itself — from one jamb to
+    the other, centered on the wall line (the glazing lines for a window).
+    Box the gap in the wall, NOT the solid wall beside it and NOT the door's
+    swing arc; the box must sit on the opening, not next to it.
   * stair: the complete flight of treads.
 
 Also read the drawing scale from the title block if present and return it

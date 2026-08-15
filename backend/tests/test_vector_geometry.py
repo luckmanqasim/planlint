@@ -387,3 +387,63 @@ def test_classify_opening_vector_snapped_refuted_unknown():
 
     # UNKNOWN: no wall geometry at all
     assert classify_opening_vector((150.0, 90.0, 186.0, 110.0), []).kind == "unknown"
+
+
+def test_classify_opening_rejects_oversize_gap():
+    # A small door box (36pt) inside a huge wall gap (210pt) must NOT snap to the
+    # whole gap — that is a wall section, not this opening.
+    from planlint.ingest.vector_geometry import classify_opening_vector
+    wall = [
+        Primitive(p0=(60.0, 100.0), p1=(90.0, 100.0)),
+        Primitive(p0=(300.0, 100.0), p1=(360.0, 100.0)),  # 210pt gap 90..300
+    ]
+    assert classify_opening_vector((150.0, 90.0, 186.0, 110.0), wall).kind == "unknown"
+
+
+def test_classify_opening_scale_cap_rejects_large_real_opening():
+    # A gap within the box-size slack but implausibly large in reality (scale
+    # known) is rejected; the same gap with no scale snaps.
+    from planlint.ingest.vector_geometry import classify_opening_vector
+    wall = [
+        Primitive(p0=(40.0, 100.0), p1=(100.0, 100.0)),
+        Primitive(p0=(250.0, 100.0), p1=(320.0, 100.0)),  # 150pt gap 100..250
+    ]
+    box = (120.0, 90.0, 230.0, 110.0)  # 110pt wide → 150 <= 3×110 (slack passes)
+    assert classify_opening_vector(box, wall).kind == "snapped"
+    # scale 1.5 in/pt → 150pt = 225 in > _MAX_OPENING_IN (200) → rejected
+    assert classify_opening_vector(box, wall, scale=1.5).kind == "unknown"
+
+
+def test_classify_opening_thickness_from_paired_walls():
+    # Two parallel wall faces 10pt apart, both cut by the opening: the snapped box
+    # thickness is the wall thickness (10), not the tall VLM box (40).
+    from planlint.ingest.vector_geometry import classify_opening_vector
+    walls = [
+        Primitive(p0=(60.0, 100.0), p1=(150.0, 100.0)),
+        Primitive(p0=(186.0, 100.0), p1=(280.0, 100.0)),
+        Primitive(p0=(60.0, 110.0), p1=(150.0, 110.0)),
+        Primitive(p0=(186.0, 110.0), p1=(280.0, 110.0)),
+    ]
+    res = classify_opening_vector((150.0, 85.0, 186.0, 125.0), walls)
+    assert res.kind == "snapped"
+    assert res.bbox[3] - res.bbox[1] == pytest.approx(10.0)
+
+
+def test_classify_opening_repositions_onto_single_nearby_gap():
+    # A box sitting on solid wall beside ONE clear opening is repositioned onto it.
+    from planlint.ingest.vector_geometry import classify_opening_vector
+    one_gap = [
+        Primitive(p0=(60.0, 100.0), p1=(200.0, 100.0)),
+        Primitive(p0=(236.0, 100.0), p1=(340.0, 100.0)),  # gap 200..236
+    ]
+    res = classify_opening_vector((150.0, 90.0, 186.0, 110.0), one_gap)
+    assert res.kind == "snapped"
+    assert res.bbox[0] == pytest.approx(200.0) and res.bbox[2] == pytest.approx(236.0)
+
+    # Two nearby gaps flanking the box → ambiguous → kept for review, not moved.
+    two_gaps = [
+        Primitive(p0=(60.0, 100.0), p1=(100.0, 100.0)),
+        Primitive(p0=(136.0, 100.0), p1=(200.0, 100.0)),
+        Primitive(p0=(236.0, 100.0), p1=(340.0, 100.0)),  # gaps 100..136 and 200..236
+    ]
+    assert classify_opening_vector((150.0, 90.0, 186.0, 110.0), two_gaps).kind == "unknown"
