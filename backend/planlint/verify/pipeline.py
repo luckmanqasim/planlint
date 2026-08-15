@@ -131,12 +131,14 @@ async def run_verification(
         try:
             governing = await hunt(asset, project_id, repo, embedder)
             wrote_any = False
+            saw_constraint = False
             for hit in governing:
                 clause, ancestors = hit["clause"], hit["ancestors"]
                 for constraint in await _constraints_for(clause, ancestors, repo, text_model):
+                    saw_constraint = True
                     result = check(asset, constraint)
                     if result is None:
-                        continue
+                        continue  # constraint governs a different asset type
                     await repo.write_verdict(asset.id, clause["id"], run_id, result)
                     counts[result.verdict.value] += 1
                     wrote_any = True
@@ -150,8 +152,12 @@ async def run_verification(
                                 asset_id=asset.id,
                             )
                         )
-            if not wrote_any and governing:
-                # Nothing applicable was checkable; leave an audit trail.
+            # Fallback only when retrieved clauses yielded NO machine-checkable
+            # constraint at all — a light audit trail. When constraints existed
+            # but every one governed a different asset type (a door-width rule
+            # matched to a window), this asset simply isn't governed: write no
+            # edge, so the clause never tags an unrelated asset for review.
+            if not wrote_any and governing and not saw_constraint:
                 await repo.write_verdict(
                     asset.id,
                     governing[0]["clause"]["id"],
