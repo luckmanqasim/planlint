@@ -104,6 +104,47 @@ def title_lines(page) -> list[str]:
     return [text for size, text in candidates if size >= top - 0.5]
 
 
+# A sheet number: a discipline letter (or two) then a dotted or dashed number —
+# 'A0.0', 'A1.2', 'A5.0', 'S-101'. Used both to read a sheet's OWN number from its
+# title block and to recognize the target of a reference callout ('1/A3.0').
+SHEET_NUMBER = re.compile(r"\b([A-Z]{1,2}\d{1,2}\.\d{1,2}|[A-Z]{1,2}-\d{2,3})\b")
+
+
+def _norm_title(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().upper())
+
+
+def sheet_number_from_titleblock(page) -> str | None:
+    """The sheet's own number, read from the title block (bottom-right quadrant,
+    where the number is typeset prominently). The largest-font match wins so a
+    small `N/…` callout elsewhere can't be mistaken for the sheet's own number."""
+    w, h = page.rect.width, page.rect.height
+    best: tuple[float, str] | None = None
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                x0, y0, _, _ = span["bbox"]
+                if x0 < w * 0.6 or y0 < h * 0.6:  # title block sits bottom-right
+                    continue
+                m = SHEET_NUMBER.search(span["text"].upper())
+                if m and (best is None or span["size"] > best[0]):
+                    best = (span["size"], m.group(1))
+    return best[1] if best else None
+
+
+def resolve_sheet_number(page, titles: list[str], registry: dict[str, str]) -> str | None:
+    """A sheet's number: its printed title-block number, else matched from the
+    sheet-index registry ({number → title}) by this page's drawing title."""
+    printed = sheet_number_from_titleblock(page)
+    if printed:
+        return printed
+    page_titles = {_norm_title(t) for t in titles}
+    for number, title in registry.items():
+        if _norm_title(title) in page_titles:
+            return number
+    return None
+
+
 def _classify_title(title: str) -> SheetType:
     t = title.upper()
     if "SCHEDULE" in t:
