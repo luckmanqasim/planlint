@@ -21,6 +21,8 @@ def _applies_to(text: str) -> AssetType:
     lowered = text.lower()
     if "door" in lowered or "gate" in lowered:
         return AssetType.DOOR
+    if "window" in lowered:
+        return AssetType.WINDOW
     if "route" in lowered or "corridor" in lowered or "walking surface" in lowered:
         return AssetType.CORRIDOR
     if "ramp" in lowered:
