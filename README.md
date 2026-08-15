@@ -221,7 +221,8 @@ Open http://localhost:3000, click **Load sample project**, then **Run
 verification**.
 
 The bundled sample is a vector floor plan with three interior doors and a fire
-exit, checked against a public-domain excerpt of the 2010 ADA Standards:
+exit, checked against the bundled code excerpt (public-domain 2010 ADA text plus
+a short illustrative egress clause):
 
 - **D1 — 36"** → `COMPLIES_WITH` ADA 404.2.3 (32" minimum)
 - **D2 — 30"** → **`VIOLATES`** ADA 404.2.3 (30 < 32)
@@ -250,7 +251,9 @@ It is a demo/dev mode only; never use it on real projects.
 NFPA and ICC / IBC codebooks are **copyrighted and are not bundled.** Upload any
 codebook PDF you are licensed to use — the ingestion pipeline is
 codebook-agnostic. The 2010 ADA Standards ship as the working sample precisely
-because they are a **US-government work in the public domain.**
+because they are a **US-government work in the public domain** (the sample adds
+one short *illustrative* egress clause, in our own wording, so a window check can
+be demonstrated — ADA does not size windows).
 
 For real codebooks (multi-column layouts, nested tables) without a vision API key,
 install the Docling parser backend:
@@ -289,9 +292,11 @@ of the codebase.
 
 ## License
 
-Apache-2.0 (see [`LICENSE`](LICENSE)). The bundled ADA excerpt is a US-government
-work in the public domain. Real NFPA / ICC codebooks are copyrighted and are
-deliberately not included — bring your own licensed copy.
+Apache-2.0 (see [`LICENSE`](LICENSE)). The bundled code excerpt is verbatim 2010
+ADA Standards text (a US-government work in the public domain); the one short
+egress clause is original illustrative content under this repo's Apache-2.0 — not
+copied from any copyrighted code. Real NFPA / ICC codebooks are copyrighted and
+are deliberately not included — bring your own licensed copy.
 
 PlanLint assists compliance review; it does not replace a licensed professional's
 judgment or a municipal authority's approval.

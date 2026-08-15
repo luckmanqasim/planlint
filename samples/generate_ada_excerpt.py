@@ -1,6 +1,10 @@
-"""Generate the bundled codebook: an excerpt of the 2010 ADA Standards for
-Accessible Design (a US-government work, public domain — safe to bundle,
-unlike NFPA/ICC codebooks).
+"""Generate the bundled sample codebook: an accessibility & egress excerpt.
+
+Chapters 4-5 are verbatim 2010 ADA Standards for Accessible Design (a US
+government work, public domain — safe to bundle, unlike NFPA/ICC codebooks).
+The closing egress section is an *illustrative* provision in our own wording
+(min opening width), not copied from any copyrighted code — it lets the sample
+demonstrate a window (egress) check, which ADA alone does not provide.
 
 Headings are set in bold like a real codebook so layout-aware parsers
 (Docling) classify them as section headers; each clause body is its own
@@ -97,6 +101,24 @@ PAGE4 = [
     ),
 ]
 
+# Illustrative egress provision (OUR wording, not copied from any code) so the
+# sample can demonstrate a window/opening check — ADA does not size windows.
+PAGE5 = [
+    ("Egress: Emergency Escape and Rescue Openings", ""),
+    ("1030 Emergency Escape and Rescue Openings", ""),
+    (
+        "1030.1 General.",
+        "Sleeping rooms and habitable spaces shall be provided with emergency "
+        "escape and rescue openings complying with 1030.",
+    ),
+    (
+        "1030.2 Minimum Clear Width.",
+        "An emergency escape and rescue opening, including an operable window "
+        "serving as the required opening, shall provide a clear opening width of "
+        "20 inches (508 mm) minimum.",
+    ),
+]
+
 
 def write_page(doc: pymupdf.Document, entries: list[tuple[str, str]]) -> None:
     page = doc.new_page(width=612, height=792)
@@ -121,6 +143,7 @@ def main() -> None:
     write_page(doc, PAGE2)
     write_page(doc, PAGE3)
     write_page(doc, PAGE4)
+    write_page(doc, PAGE5)
     doc.save(OUT)
     print(f"wrote {OUT}")
 
