@@ -153,6 +153,34 @@ async def test_detect_page_keeps_numbered_room_with_area():
     assert room.floor_area_m2 == 39.37
 
 
+async def test_detect_page_returns_references():
+    args = {
+        "entities": [{"entity_type": "door", "name": "D1", "box": [0, 0, 500, 500]}],
+        "references": [
+            {"kind": "section", "detail_num": "1", "target_sheet": "A3.0",
+             "box": [100, 100, 200, 200]}
+        ],
+        "scale_text": None,
+    }
+    page = await detect_page(png_100x80(), FunctionModel(lambda m, i: structured(i, args)))
+    assert len(page.references) == 1
+    ref = page.references[0]
+    assert ref.kind == "section" and ref.detail_num == "1" and ref.target_sheet == "A3.0"
+    # [ymin,xmin,ymax,xmax] 0-1000 -> pixels(100x80) -> points(zoom 2)
+    assert ref.box == (5.0, 4.0, 10.0, 8.0)
+
+
+async def test_bad_reference_box_triggers_retry():
+    good = {**GOOD_ARGS, "references": [
+        {"kind": "detail", "detail_num": "3", "target_sheet": "A1.7", "box": [100, 100, 200, 200]}]}
+    bad = {**GOOD_ARGS, "references": [
+        {"kind": "detail", "detail_num": "3", "target_sheet": "A1.7", "box": [200, 200, 100, 100]}]}
+    model_fn, calls = scripted_retry_then(good, bad)
+    page = await detect_page(png_100x80(), FunctionModel(model_fn))
+    assert calls["n"] == 2
+    assert page.references[0].target_sheet == "A1.7"
+
+
 async def test_persistent_bad_boxes_raise():
     bad = {
         "entities": [{"entity_type": "door", "name": "D1", "box": [512, 508, 90, 543]}],

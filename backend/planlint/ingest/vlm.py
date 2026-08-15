@@ -7,6 +7,8 @@ here so callers speak PDF points only.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent, ModelRetry
 
@@ -24,6 +26,9 @@ _SPACE_TYPES = (AssetType.ROOM, AssetType.CORRIDOR)
 # A bare number ('1') or single letter ('D') labelling a room is a callout /
 # detail-marker bubble (often on a dashed section-cut line), not a space name.
 _ROOM_CALLOUT = re.compile(r"^(?:\d+|[A-Za-z])$")
+# A reference callout drawn as text ('3/A1.7') — the deterministic offline reader
+# for PLANLINT_OFFLINE_SAMPLE (the real VLM classifies the marker glyph instead).
+_REF_LABEL = re.compile(r"^(\d+)\s*/\s*([A-Z]{1,2}\d{1,2}\.\d{1,2})\b", re.IGNORECASE)
 
 
 def _resolve_space_name(entity: "VlmEntity") -> str | None:
@@ -48,8 +53,20 @@ class VlmEntity(BaseModel):
     box: tuple[float, float, float, float]  # pixels in the rendered image
 
 
+class VlmReference(BaseModel):
+    """A cross-sheet reference marker read off a plan — a section / detail /
+    elevation callout pointing to another sheet. The target is grounded against the
+    text layer + sheet registry downstream (ingest/references.py) before use."""
+
+    kind: Literal["section", "detail", "elevation"]
+    detail_num: str = ""  # the number in the marker bubble ('1', '3')
+    target_sheet: str  # the sheet it points to, as printed ('A3.0')
+    box: tuple[float, float, float, float]  # pixels in the rendered image (0-1000)
+
+
 class VlmPage(BaseModel):
     entities: list[VlmEntity] = Field(default_factory=list)
+    references: list[VlmReference] = Field(default_factory=list)
     scale_text: str | None = None  # e.g. 'SCALE: 1/4" = 1\'-0"' from the title block
 
 
@@ -113,6 +130,18 @@ For each entity return:
     swing arc; the box must sit on the opening, not next to it.
   * stair: the complete flight of treads.
 
+Reference markers link this sheet to others — return them in `references`:
+- section marker: a heavy cut line ending in an arrow and a bubble split as
+  detail-number over sheet-number (e.g. 1 / A3.0). kind='section'.
+- detail marker: a dashed circle or box around a feature with a leader to a
+  bubble reading number / sheet (e.g. 3 / A1.7). kind='detail'.
+- elevation marker: a bubble with an arrow or triangle pointing at a wall, keyed
+  to an interior-elevation sheet. kind='elevation'.
+For each marker return: kind; detail_num (the number in the bubble); target_sheet
+(the sheet number it points to, EXACTLY as printed, e.g. 'A3.0'); and box covering
+the marker. Only report a marker whose target sheet number is actually printed on
+the page — omit anything ambiguous.
+
 Also read the drawing scale from the title block if present and return it
 verbatim as scale_text (e.g. 'SCALE: 1/4" = 1\'-0"'), else null.
 """
@@ -154,6 +183,14 @@ def build_detection_agent(model) -> Agent:
                 )
             if entity.entity_type == AssetType.ROOM:
                 room_areas.append((ymax - ymin) * (xmax - xmin))
+        for i, ref in enumerate(output.references):
+            ymin, xmin, ymax, xmax = ref.box
+            if not (0 <= ymin < ymax <= 1000 and 0 <= xmin < xmax <= 1000):
+                problems.append(
+                    f"references[{i}] ({ref.kind} -> {ref.target_sheet!r}): box "
+                    f"{ref.box} is not [ymin, xmin, ymax, xmax] on the 0-1000 scale "
+                    "with min < max"
+                )
         # Rooms boxed around their name text instead of their walls: on the
         # 0-1000 grid a text label is a sliver, while a plan's largest room
         # always covers well over 1.5% of the page.
@@ -184,20 +221,25 @@ async def detect_page(image_png: bytes, model) -> VlmPage:
             BinaryContent(data=image_png, media_type="image/png"),
         ]
     )
+    def to_points(box: BBox) -> BBox:
+        # De-normalize [0, 1000] → image pixels → PDF points.
+        ymin, xmin, ymax, xmax = box
+        return (
+            (xmin / 1000.0) * img_width / RENDER_ZOOM,
+            (ymin / 1000.0) * img_height / RENDER_ZOOM,
+            (xmax / 1000.0) * img_width / RENDER_ZOOM,
+            (ymax / 1000.0) * img_height / RENDER_ZOOM,
+        )
+
     page = result.output
     scaled = []
     for entity in page.entities:
         name = _resolve_space_name(entity)
         if name is None:
             continue  # a bare callout marker mis-detected as a space — drop it
-        ymin, xmin, ymax, xmax = entity.box
-        # De-normalize from [0, 1000] scale to image pixels, then scale to PDF points
-        x0 = (xmin / 1000.0) * img_width / RENDER_ZOOM
-        y0 = (ymin / 1000.0) * img_height / RENDER_ZOOM
-        x1 = (xmax / 1000.0) * img_width / RENDER_ZOOM
-        y1 = (ymax / 1000.0) * img_height / RENDER_ZOOM
-        scaled.append(entity.model_copy(update={"box": (x0, y0, x1, y1), "name": name}))
-    return VlmPage(entities=scaled, scale_text=page.scale_text)
+        scaled.append(entity.model_copy(update={"box": to_points(entity.box), "name": name}))
+    refs = [ref.model_copy(update={"box": to_points(ref.box)}) for ref in page.references]
+    return VlmPage(entities=scaled, references=refs, scale_text=page.scale_text)
 
 
 def detect_from_labels(labels) -> VlmPage:
@@ -206,16 +248,27 @@ def detect_from_labels(labels) -> VlmPage:
     'FIRE EXIT' label marks a fire exit. Used by tests and the offline demo
     path — never in real deployments."""
     entities: list[VlmEntity] = []
+    references: list[VlmReference] = []
     scale_text = None
     for label in labels:
         text = label.text.strip()
         upper = text.upper()
+        ref = _REF_LABEL.match(text)
         if "SCALE" in upper:
             scale_text = text
+        elif ref:
+            references.append(
+                VlmReference(
+                    kind="detail",  # offline can't read the glyph; default to detail
+                    detail_num=ref.group(1),
+                    target_sheet=ref.group(2).upper(),
+                    box=label.bbox,
+                )
+            )
         elif "FIRE EXIT" in upper:
             entities.append(
                 VlmEntity(entity_type=AssetType.FIRE_EXIT, name=text, box=label.bbox)
             )
         elif upper.startswith("D") and '"' in text:
             entities.append(VlmEntity(entity_type=AssetType.DOOR, name=text, box=label.bbox))
-    return VlmPage(entities=entities, scale_text=scale_text)
+    return VlmPage(entities=entities, references=references, scale_text=scale_text)
