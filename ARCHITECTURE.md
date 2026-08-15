@@ -245,10 +245,10 @@ the largest and most heuristic subsystem — and where the honest limitations li
    schedule sheets, so an opening's callout can be joined to its size regardless of
    which sheet the schedule is on.
 2. **Per page** (`process_page`, isolated in try/except): route by sheet type —
-   floor plans/`OTHER` run the plan detector, `SCHEDULE` is parsed for standalone
-   opening rows, elevations/sections run the vertical-dimension detector, and
-   skip-types (foundation, roof, RCP/electrical, detail, cover) are recorded but
-   not linted.
+   floor plans/`OTHER` run the plan detector, `SCHEDULE` sheets feed only the
+   mark→size index (no standalone assets — a schedule row has no location on a
+   plan), elevations/sections run the vertical-dimension detector, and skip-types
+   (foundation, roof, RCP/electrical, detail, cover) are recorded but not linted.
 3. **Per detected entity** (vector path): snap the box to geometry, then resolve
    its measurements by a strict **precedence** (see §10), attach `source` +
    `confidence`, and keep the asset only if it carries something checkable.
@@ -275,7 +275,11 @@ Pure math over PyMuPDF primitives — no LLM. The deterministic backbone:
   annotation).
 - `build_wall_runs` + `classify_opening_vector` — grade a claimed opening against
   the wall geometry, tri-state: `snapped` (real flanked gap), `refuted`
-  (hatching/fill occupies it → dropped), `unknown` (keep for review).
+  (hatching/fill occupies it → dropped), `unknown` (keep for review). The snapped
+  gap must be corroborated (comparable to the VLM box, and plausible in real
+  inches given the scale) so a door can't swallow a whole wall; box thickness comes
+  from the paired wall faces, and a box that landed beside the opening is
+  repositioned onto a single unambiguous nearby gap.
 - `measure_asset` — a nearby dimension label, else the longest interior segment ×
   scale (openings only). `parse_slope_label` — ramp grade.
 
@@ -289,11 +293,13 @@ deferred follow-up.
 
 ### `ingest/schedule.py`
 `parse_schedule_index(page)` builds a **mark→`OpeningSpec`** index from a schedule
-drawn as **positioned text** (real CAD schedules are line-art PyMuPDF
-`find_tables` can't recover): it tracks the current `DOOR SCHEDULE` /
-`WINDOW SCHEDULE` section, and for each row reads the size (`parse_size` →
-`W×H`) and the mark just left of it. `parse_schedule` still returns standalone
-opening assets (ruled-table path + positioned-text fallback).
+— covering both a **ruled table** PyMuPDF recovers (`_index_rows`, testable without
+table detection) and one drawn as **positioned text** (real CAD schedules are
+line-art `find_tables` can't recover): the text scan tracks the current
+`DOOR SCHEDULE` / `WINDOW SCHEDULE` section, and for each row reads the size
+(`parse_size` → `W×H`) and the mark just left of it. The index is the schedule's
+only output — it is joined to a real plan opening by callout, never emitted as a
+standalone (locationless) asset.
 
 ### `ingest/raster_geometry.py`
 For scanned pages: OpenCV wall-mask analysis. Flood-fills room interiors (openings
@@ -363,9 +369,11 @@ Local `fastembed` ONNX **bge-small** (384-dim). No API key, no cost, determinist
   SSE stream) stays live.
 - `run_verification` — the loop: for each asset, `hunt` → `_constraints_for` →
   `check` → `write_verdict`. **Per-asset `try/except`**: an error records a
-  `NEEDS_REVIEW` fallback verdict and continues. If governing clauses exist but
-  none was machine-checkable, it writes an explicit `NEEDS_REVIEW` — never a silent
-  gap.
+  `NEEDS_REVIEW` fallback verdict and continues. A constraint governing this
+  asset's type but not verdictable writes an explicit `NEEDS_REVIEW`; one governing
+  a *different* type writes no edge (a door-width rule never tags a window). The
+  fallback `NEEDS_REVIEW` fires only when the retrieved clauses yield no
+  machine-checkable constraint at all — never a silent gap.
 - `_constraints_for` — the cache gate: `constraints_extracted?` → return cached,
   else extract (real or offline stand-in) → `save_constraints` + `mark_constraints_extracted`.
 
@@ -450,11 +458,14 @@ reconciled on failure; effect cleanup mandatory.
 
 **Components**
 - `PlanViewer.tsx` — **left pane**: renders a sheet's PDF page (pdf.js) and
-  overlays asset boxes colored by worst verdict.
+  overlays asset boxes colored by worst verdict; selecting one spotlights it (the
+  rest dim, the selection glows) and centers it in view.
 - `CodePane.tsx` — **right pane**: the codebook clause tree annotated with
-  verdicts; clicking a violated clause reveals its detail.
+  verdicts. Selecting an asset spotlights its governing clauses (the rest fade),
+  and each clause lists every asset it governs as clickable chips — the reverse of
+  the inspector's cross-reference.
 - `AssetInspector.tsx` — the selected asset's detail card (what it is, how it was
-  measured, its verdicts) pinned atop the right pane.
+  measured, its governing clauses), a distinct accent card pinned atop the right pane.
 - `AssetIndex.tsx` — browse every asset on the sheet, grouped worst-verdict-first.
 - `CanvasLegend.tsx` — the overlay key that is also a verdict filter.
 - `CodebookModal.tsx` — renders one codebook PDF page with the clause boxed

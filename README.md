@@ -114,8 +114,6 @@ the candid picture.
   of this, but not all — a stronger vision model meaningfully improves detection.
 - **Feet-only callouts are ignored.** A bare `9'` (no inch mark) is not yet parsed
   as a dimension.
-- **Schedule sheets also emit standalone rows.** A joined plan opening and its
-  schedule-sheet row can both appear in the graph (dedup is future work).
 - **Generalization is unproven.** The geometry work is validated against one real
   multi-sheet set plus synthetic fixtures. Different firms' dimensioning styles,
   callout conventions, and layer discipline will surface new edge cases.
