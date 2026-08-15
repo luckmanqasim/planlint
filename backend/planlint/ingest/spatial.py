@@ -26,7 +26,6 @@ from planlint.ingest.ocr import ocr_boxes
 from planlint.ingest.schedule import (
     OpeningSpec,
     _normalize_mark as normalize_mark,
-    parse_schedule,
     parse_schedule_index,
 )
 from planlint.ingest.sheet_type import SheetType, classify_sheet
@@ -273,14 +272,16 @@ async def ingest_floorplan(
             sheet_type = sheet_types[page_index]
 
             if sheet_type is SheetType.SCHEDULE:
+                # A schedule feeds the document-level mark→size index (built
+                # above), not standalone assets: a schedule row has no location on
+                # a plan — its size is joined to the real plan opening by callout.
                 page_type = await asyncio.to_thread(geometry.detect_pdf_type, page)
-                assets = await asyncio.to_thread(parse_schedule, page)
-                await record_sheet(page_index, page, assets, None, None)
+                await record_sheet(page_index, page, [], None, None)
                 await emit(
                     RunEvent(
                         stage="ingest:spatial",
                         message=f"Page {page_index + 1}/{total}: schedule — "
-                        f"{len(assets)} opening(s) tabulated",
+                        "indexed for callout matching",
                         progress=(page_index + 1) / total,
                     )
                 )

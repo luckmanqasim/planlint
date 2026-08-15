@@ -28,7 +28,8 @@ async def test_only_floor_plans_are_detected_schedules_are_parsed(
     _blank_pdf(pdf, pages=3)
     monkeypatch.setattr(spatial.settings, "planlint_offline_sample", False)
 
-    # Page 0 foundation (skip), page 1 floor plan (detect), page 2 schedule (parse).
+    # Page 0 foundation (skip), page 1 floor plan (detect), page 2 schedule
+    # (feeds the index, emits no assets of its own).
     order = [SheetType.FOUNDATION, SheetType.FLOOR_PLAN, SheetType.SCHEDULE]
     seen = {"i": 0}
 
@@ -43,20 +44,8 @@ async def test_only_floor_plans_are_detected_schedules_are_parsed(
         detect_calls["n"] += 1
         return VlmPage(entities=[], scale_text=None)
 
-    def fake_parse_schedule(page):
-        return [
-            PhysicalAsset(
-                type=AssetType.DOOR,
-                label="D1",
-                bbox=(0, 0, 10, 10),
-                source="vlm-only",
-                measurements={Parameter.CLEAR_WIDTH: 36.0},
-            )
-        ]
-
     monkeypatch.setattr(spatial, "classify_sheet", fake_classify)
     monkeypatch.setattr(spatial, "detect_page", fake_detect)
-    monkeypatch.setattr(spatial, "parse_schedule", fake_parse_schedule)
 
     row = {
         "id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
@@ -73,12 +62,12 @@ async def test_only_floor_plans_are_detected_schedules_are_parsed(
 
     # Detector ran once — only the floor-plan page.
     assert detect_calls["n"] == 1
-    # All three pages recorded; the schedule's door is the only asset.
+    # All three pages recorded; the schedule contributes to the index, not assets.
     assert len(fake_repo.sheets) == 3
-    assert [a["type"] for a in fake_repo.assets.values()] == ["door"]
+    assert list(fake_repo.assets.values()) == []
     # The foundation page was recorded but flagged not-linted.
     assert any("not linted" in e.message for e in events)
-    assert any("schedule — 1 opening" in e.message for e in events)
+    assert any("schedule — indexed for callout matching" in e.message for e in events)
 
 
 async def test_phantom_space_without_name_area_or_walls_is_dropped(
@@ -444,8 +433,7 @@ async def _ingest_two_page_set(tmp_path, fake_repo, monkeypatch, door_callout, s
 
     await spatial.ingest_floorplan(pdf, row, fake_repo, model=None, emit=emit)
     doors = [a for a in fake_repo.assets.values() if a["type"] == "door"]
-    # The plan door is the small (gap-sized) one; the schedule sheet also records
-    # a full-page standalone door row.
+    # Only the plan door exists now — the schedule feeds the index, not assets.
     return min(doors, key=lambda a: a["bbox"][2] - a["bbox"][0])
 
 
