@@ -66,6 +66,37 @@ PAGE2 = [
     ),
 ]
 
+PAGE3 = [
+    ("405 Ramps", ""),
+    (
+        "405.1 General.",
+        "Ramps on accessible routes shall comply with 405.",
+    ),
+    (
+        "405.2 Slope.",
+        "Ramp runs shall have a running slope not steeper than 1:12.",
+    ),
+    (
+        "405.5 Clear Width.",
+        "The clear width of a ramp run and, where handrails are provided, the clear "
+        "width between handrails shall be 36 inches (915 mm) minimum.",
+    ),
+]
+
+PAGE4 = [
+    ("Chapter 5: General Site and Building Elements", ""),
+    ("504 Stairways", ""),
+    (
+        "504.1 General.",
+        "Stairs shall comply with 504.",
+    ),
+    (
+        "504.2 Treads and Risers.",
+        "Stair riser heights shall be 4 inches (100 mm) minimum and 7 inches "
+        "(180 mm) maximum. Stair tread depths shall be 11 inches (280 mm) minimum.",
+    ),
+]
+
 
 def write_page(doc: pymupdf.Document, entries: list[tuple[str, str]]) -> None:
     page = doc.new_page(width=612, height=792)
@@ -88,6 +119,8 @@ def main() -> None:
     doc = pymupdf.open()
     write_page(doc, PAGE1)
     write_page(doc, PAGE2)
+    write_page(doc, PAGE3)
+    write_page(doc, PAGE4)
     doc.save(OUT)
     print(f"wrote {OUT}")
 
