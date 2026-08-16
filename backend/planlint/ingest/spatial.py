@@ -23,15 +23,22 @@ from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.ocr import ocr_boxes
+from planlint.ingest.references import ground_reference, nearest_asset
 from planlint.ingest.schedule import (
     OpeningSpec,
     _normalize_mark as normalize_mark,
     parse_schedule_index,
 )
-from planlint.ingest.sheet_type import SheetType, classify_sheet
+from planlint.ingest.sheet_index import parse_sheet_index
+from planlint.ingest.sheet_type import (
+    SheetType,
+    classify_sheet,
+    resolve_sheet_number,
+    title_lines,
+)
 from planlint.ingest.vector_geometry import classify_opening_vector
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, detect_from_labels
-from planlint.models import AssetType, BBox, Parameter, PhysicalAsset, RunEvent
+from planlint.models import AssetType, BBox, Parameter, PhysicalAsset, RunEvent, SheetReference
 
 EmitFn = Callable[[RunEvent], Awaitable[None]]
 
@@ -251,8 +258,33 @@ async def ingest_floorplan(
                 )
             )
 
+        # The sheet index (cover page): {sheet_number → title}. Gives each sheet its
+        # number and lets reference callouts ('1/A3.0') resolve their target sheet.
+        sheet_registry: dict[str, str] = {}
+        for i, st in enumerate(sheet_types):
+            if st is SheetType.COVER_NOTES:
+                try:
+                    reg = await asyncio.to_thread(parse_sheet_index, doc[i])
+                except Exception:
+                    reg = {}
+                for number, title in reg.items():
+                    sheet_registry.setdefault(number, title)
+        if sheet_registry:
+            await emit(
+                RunEvent(
+                    stage="ingest:spatial",
+                    message=f"Sheet index: {len(sheet_registry)} sheet(s) for "
+                    "reference cross-linking",
+                )
+            )
+        # Cross-sheet references (asset → target sheet), collected across pages and
+        # persisted after every sheet exists (a target may be a later page).
+        collected_references: list[SheetReference] = []
+
         async def record_sheet(page_index, page, assets, scale_text, scale) -> None:
             sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
+            titles = await asyncio.to_thread(title_lines, page)
+            number = await asyncio.to_thread(resolve_sheet_number, page, titles, sheet_registry)
             await repo.create_sheet(
                 sheet_id=sheet_id,
                 document_id=document_id,
@@ -261,6 +293,8 @@ async def ingest_floorplan(
                 height=page.rect.height,
                 scale_text=scale_text,
                 scale_in_per_point=scale,
+                sheet_number=number,
+                title=titles[0] if titles else None,
             )
             await repo.upsert_assets(sheet_id, assets)
 
@@ -560,6 +594,24 @@ async def ingest_floorplan(
                     )
                 )
 
+            # Cross-sheet reference markers: the VLM classified them; ground each
+            # target against the page text layer + sheet registry, then bind it to
+            # the nearest plan asset (linking that asset to its detail/section sheet).
+            if vlm_page.references:
+                text_upper = (await asyncio.to_thread(page.get_text)).upper()
+                for vref in vlm_page.references:
+                    sref = ground_reference(
+                        vref.kind, vref.detail_num, vref.target_sheet,
+                        tuple(vref.box), text_upper, sheet_registry,
+                    )
+                    if sref is None:
+                        continue
+                    host = nearest_asset(sref.bbox, assets)
+                    if host is not None:
+                        collected_references.append(
+                            sref.model_copy(update={"source_asset_id": host.id})
+                        )
+
             await record_sheet(page_index, page, assets, scale_text, scale)
             await emit(
                 RunEvent(
@@ -590,6 +642,18 @@ async def ingest_floorplan(
                     )
                 )
                 await record_sheet(page_index, doc[page_index], [], None, None)
+
+        # Now that every sheet exists, wire each grounded reference to its target
+        # sheet (resolved by sheet_number within this document).
+        if collected_references:
+            await repo.save_references(document_id, collected_references)
+            await emit(
+                RunEvent(
+                    stage="ingest:spatial",
+                    message=f"Linked {len(collected_references)} cross-sheet "
+                    "reference(s) to assets",
+                )
+            )
     finally:
         doc.close()
     await repo.mark_ingested(document_id, pdf_type)

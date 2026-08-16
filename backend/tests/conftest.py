@@ -52,6 +52,7 @@ class FakeRepository:
         self.constraints: dict[str, list[Constraint]] = {}
         self.extracted: set[str] = set()
         self.verdicts: list[dict] = []
+        self.references: list[dict] = []
 
     # -- documents
     async def get_documents(self, project_id: str) -> list[dict]:
@@ -62,12 +63,37 @@ class FakeRepository:
 
     # -- sheets / assets
     async def create_sheet(self, sheet_id, document_id, page_number, width, height,
-                           scale_text, scale_in_per_point) -> None:
+                           scale_text, scale_in_per_point, sheet_number=None, title=None) -> None:
         self.sheets[sheet_id] = {
             "id": sheet_id, "document_id": document_id, "page_number": page_number,
             "width": width, "height": height, "scale_text": scale_text,
             "scale_in_per_point": scale_in_per_point,
+            "sheet_number": sheet_number, "title": title,
         }
+
+    async def save_references(self, document_id, references) -> None:
+        by_number = {
+            s["sheet_number"]: s["id"]
+            for s in self.sheets.values()
+            if s.get("document_id") == document_id and s.get("sheet_number")
+        }
+        for r in references:
+            if not r.source_asset_id:
+                continue
+            target_id = by_number.get(r.target_sheet_number)
+            src_sheet = self.assets.get(r.source_asset_id, {}).get("sheet_id")
+            if target_id is None or target_id == src_sheet:
+                continue
+            self.references.append(
+                {
+                    "source_asset_id": r.source_asset_id,
+                    "target_sheet_id": target_id,
+                    "target_sheet_number": r.target_sheet_number,
+                    "kind": r.kind,
+                    "detail_num": r.detail_num,
+                    "confidence": r.confidence,
+                }
+            )
 
     async def upsert_assets(self, sheet_id: str, assets: list[PhysicalAsset]) -> None:
         for asset in assets:
