@@ -26,9 +26,17 @@ interface Props {
   verified?: boolean;
   onFocusClause: (regulationId: string) => void;
   onViewClause?: (view: CodebookView) => void;
+  /** Jump to another sheet — used by the cross-sheet reference chips. */
+  onSelectSheet?: (sheetId: string) => void;
 }
 
-export default function AssetInspector({ asset, verified, onFocusClause, onViewClause }: Props) {
+export default function AssetInspector({
+  asset,
+  verified,
+  onFocusClause,
+  onViewClause,
+  onSelectSheet,
+}: Props) {
   if (!asset) {
     return (
       <div className="border-b border-edge px-4 py-3 text-xs text-ink-dim">
@@ -128,6 +136,30 @@ export default function AssetInspector({ asset, verified, onFocusClause, onViewC
             ? "No applicable clauses found for this asset."
             : "No governing clauses yet \u2014 run verification against a codebook."}
         </p>
+      )}
+
+      {asset.references.length > 0 && onSelectSheet && (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-medium text-ink-dim">
+            Referenced on ({asset.references.length})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {asset.references.map((ref, i) => (
+              <button
+                key={i}
+                onClick={() => onSelectSheet(ref.target_sheet_id)}
+                title={`Go to sheet ${ref.target_sheet_number ?? ""}`}
+                className="inline-flex items-center gap-1 rounded border border-edge bg-surface-2/40 px-1.5 py-0.5 text-xs hover:bg-surface-2"
+              >
+                <span className="capitalize text-ink-dim">{ref.kind}</span>
+                <span className="font-mono text-ink">
+                  {ref.detail_num ? `${ref.detail_num}/` : ""}
+                  {ref.target_sheet_number ?? "?"}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

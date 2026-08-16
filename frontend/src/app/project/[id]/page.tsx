@@ -359,7 +359,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                         : "text-ink-dim hover:bg-surface-2/60 hover:text-ink"
                     }`}
                   >
-                    Sheet {s.page_number + 1}
+                    {s.sheet_number ?? `Sheet ${s.page_number + 1}`}
                     {fails > 0 && (
                       <span className="rounded-full bg-fail/20 px-1.5 text-[10px] font-semibold text-fail">
                         {fails}
@@ -427,6 +427,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 setFocusClauseId(regId);
               }}
               onViewClause={setCodebookView}
+              onSelectSheet={(sheetId) => {
+                const idx = sheets.findIndex((s) => s.id === sheetId);
+                if (idx >= 0) switchSheet(idx);
+              }}
             />
           </div>
           <div
