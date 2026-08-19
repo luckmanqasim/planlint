@@ -85,9 +85,9 @@ export function assetMeasurements(asset: Asset): { label: string; value: string 
 /** How much to trust an asset's geometry, by provenance. `vlm-only` boxes were
  * not confirmed against vector or pixel geometry, so they warrant a look. */
 export function sourceQuality(source: Asset["source"]): { label: string; confirmed: boolean } {
-  return source === "vlm-only"
-    ? { label: "Needs review", confirmed: false }
-    : { label: "Confirmed", confirmed: true };
+  if (source === "vlm-only") return { label: "Needs review", confirmed: false };
+  if (source === "detail-referenced") return { label: "From referenced sheet", confirmed: true };
+  return { label: "Confirmed", confirmed: true };
 }
 
 // ---- visibility filtering (legend ⇄ canvas ⇄ index share one key scheme) ----

@@ -29,7 +29,7 @@ export interface Asset {
   label: string;
   bbox: [number, number, number, number];
   confidence: number;
-  source: "vector-snapped" | "raster-snapped" | "vlm-only" | "schedule";
+  source: "vector-snapped" | "raster-snapped" | "vlm-only" | "schedule" | "detail-referenced";
   measurements: Record<string, number>;
   verdicts: VerdictEdge[];
   references: SheetRef[];
