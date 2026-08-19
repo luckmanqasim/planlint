@@ -36,11 +36,30 @@ def test_harvest_single_grounded_value():
     assert got == {Parameter.RISER_HEIGHT: 7.0}
 
 
-def test_harvest_riser_and_tread_pair():
+def test_harvest_skips_ambiguous_riser_tread():
+    # riser and tread ranges overlap — magnitude can't tell them apart, so a stair
+    # carrying both harvests neither (→ NEEDS_REVIEW), never a mis-attributed number.
     doc, page = _detail_page([('7"', 7.0), ('11"', 11.0)])
     got = harvest_measurements(page, {Parameter.RISER_HEIGHT, Parameter.TREAD_DEPTH})
     doc.close()
-    assert got == {Parameter.RISER_HEIGHT: 7.0, Parameter.TREAD_DEPTH: 11.0}
+    assert got == {}
+
+
+def test_harvest_separates_width_from_height():
+    # width and height ranges do NOT overlap, so both are attributed unambiguously.
+    doc, page = _detail_page([('30"', 30.0), ('84"', 84.0)])
+    got = harvest_measurements(page, {Parameter.CLEAR_WIDTH, Parameter.OPENING_HEIGHT})
+    doc.close()
+    assert got == {Parameter.CLEAR_WIDTH: 30.0, Parameter.OPENING_HEIGHT: 84.0}
+
+
+def test_harvest_keeps_noncompliant_value():
+    # a 24" door leaf is a real, sub-code width — it must be harvested so the checker
+    # can flag the violation, NOT dropped for being out of a "typical" band.
+    doc, page = _detail_page([('24"', 24.0)])
+    got = harvest_measurements(page, {Parameter.CLEAR_WIDTH, Parameter.OPENING_HEIGHT})
+    doc.close()
+    assert got == {Parameter.CLEAR_WIDTH: 24.0}
 
 
 def test_harvest_skips_when_ambiguous():
@@ -51,8 +70,8 @@ def test_harvest_skips_when_ambiguous():
     assert got == {}
 
 
-def test_harvest_skips_out_of_range():
-    doc, page = _detail_page([('20"', 20.0)])  # not a plausible riser
+def test_harvest_rejects_misread_only():
+    doc, page = _detail_page([('200"', 200.0)])  # a misread, not a plausible riser
     got = harvest_measurements(page, {Parameter.RISER_HEIGHT})
     doc.close()
     assert got == {}
@@ -68,26 +87,26 @@ def test_harvest_needs_scale():
     assert got == {}
 
 
-async def test_harvest_enriches_referring_stair(tmp_path, fake_repo, monkeypatch):
+async def test_harvest_enriches_referring_door(tmp_path, fake_repo, monkeypatch):
     from planlint.ingest.vlm import VlmEntity, VlmPage, VlmReference
 
     monkeypatch.setattr(spatial.settings, "planlint_offline_sample", True)
     pdf = tmp_path / "set.pdf"
     doc = pymupdf.open()
-    p0 = doc.new_page(width=612, height=792)  # plan: a stair + a detail callout
+    p0 = doc.new_page(width=612, height=792)  # plan: a door + a detail callout
     p0.insert_text((305, 262), "3/A1.7", fontsize=8)  # grounds the target in the text layer
-    p1 = doc.new_page(width=612, height=792)  # A1.7 STAIR DETAIL with a 7" riser
+    p1 = doc.new_page(width=612, height=792)  # A1.7 DOOR DETAIL, a single 30" leaf width
     p1.insert_text((60, 60), SCALE_TEXT, fontsize=9)
-    p1.insert_text((100, 100), "STAIR DETAIL", fontsize=14)
+    p1.insert_text((100, 100), "DOOR DETAIL", fontsize=14)
     p1.insert_text((520, 740), "A1.7", fontsize=12)  # the detail's own sheet number
-    p1.draw_line((100, 300), (131.5, 300))
-    p1.insert_text((100, 294), '7"', fontsize=8)
+    p1.draw_line((100, 300), (100 + 30 * 4.5, 300))
+    p1.insert_text((100, 294), '30"', fontsize=8)
     doc.save(str(pdf))
     doc.close()
 
     def fake_from_labels(labels):
         return VlmPage(
-            entities=[VlmEntity(entity_type=AssetType.STAIR, name="STAIR", box=(300, 200, 340, 260))],
+            entities=[VlmEntity(entity_type=AssetType.DOOR, name="D1", box=(300, 200, 340, 260))],
             references=[VlmReference(kind="detail", detail_num="3", target_sheet="A1.7", box=(305, 262, 320, 272))],
         )
 
@@ -107,6 +126,6 @@ async def test_harvest_enriches_referring_stair(tmp_path, fake_repo, monkeypatch
 
     await spatial.ingest_floorplan(pdf, row, fake_repo, model=None)
 
-    stair = next(a for a in fake_repo.assets.values() if a["type"] == "stair")
-    assert stair["measurements"] == {"riser_height": 7.0}
-    assert stair["source"] == "detail-referenced"
+    door = next(a for a in fake_repo.assets.values() if a["type"] == "door")
+    assert door["measurements"] == {"clear_width": 30.0}
+    assert door["source"] == "detail-referenced"
