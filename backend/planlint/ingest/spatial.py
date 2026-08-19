@@ -23,6 +23,7 @@ from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.ocr import ocr_boxes
+from planlint.ingest.harvest import harvest_measurements
 from planlint.ingest.references import ground_reference, nearest_asset
 from planlint.ingest.schedule import (
     OpeningSpec,
@@ -44,6 +45,17 @@ EmitFn = Callable[[RunEvent], Awaitable[None]]
 
 _OPENING_TYPES = (AssetType.DOOR, AssetType.FIRE_EXIT, AssetType.WINDOW)
 _SPACE_TYPES = (AssetType.ROOM, AssetType.CORRIDOR)
+
+# Checkable parameters worth harvesting from a referenced detail/section sheet, by
+# asset type — dimensions a plan view often doesn't print itself (a stair's riser/
+# tread live on the section it points to). Slope is grid-unharvestable, so ramps
+# are absent here.
+_HARVEST_PARAMS: dict[AssetType, set[Parameter]] = {
+    AssetType.STAIR: {Parameter.RISER_HEIGHT, Parameter.TREAD_DEPTH},
+    AssetType.DOOR: {Parameter.CLEAR_WIDTH, Parameter.OPENING_HEIGHT},
+    AssetType.FIRE_EXIT: {Parameter.CLEAR_WIDTH, Parameter.OPENING_HEIGHT},
+    AssetType.WINDOW: {Parameter.CLEAR_WIDTH, Parameter.OPENING_HEIGHT},
+}
 _SQIN_TO_M2 = 0.00064516  # 1 in² in m² — for width×depth areas off the dim grid
 
 
@@ -278,13 +290,19 @@ async def ingest_floorplan(
                 )
             )
         # Cross-sheet references (asset → target sheet), collected across pages and
-        # persisted after every sheet exists (a target may be a later page).
+        # persisted after every sheet exists (a target may be a later page). The
+        # maps below let the harvest pass re-open a target sheet and enrich the
+        # referring asset with a dimension drawn there.
         collected_references: list[SheetReference] = []
+        page_of_number: dict[str, int] = {}  # sheet_number → page index
+        asset_by_id: dict[str, PhysicalAsset] = {}  # assets that carry a reference
 
         async def record_sheet(page_index, page, assets, scale_text, scale) -> None:
             sheet_id = f"sheet-{uuid.uuid4().hex[:10]}"
             titles = await asyncio.to_thread(title_lines, page)
             number = await asyncio.to_thread(resolve_sheet_number, page, titles, sheet_registry)
+            if number:
+                page_of_number.setdefault(number, page_index)
             await repo.create_sheet(
                 sheet_id=sheet_id,
                 document_id=document_id,
@@ -608,6 +626,7 @@ async def ingest_floorplan(
                         continue
                     host = nearest_asset(sref.bbox, assets)
                     if host is not None:
+                        asset_by_id[host.id] = host
                         collected_references.append(
                             sref.model_copy(update={"source_asset_id": host.id})
                         )
@@ -654,6 +673,43 @@ async def ingest_floorplan(
                     "reference(s) to assets",
                 )
             )
+            # Harvest a grounded dimension from each referenced detail/section
+            # sheet and enrich the referring asset — the compliance payoff. Only a
+            # missing, checkable parameter is filled, and only from a single
+            # unambiguous grounded value, so a plan measurement is never overridden
+            # and an ambiguous sheet contributes nothing.
+            enriched = 0
+            for sref in collected_references:
+                asset = asset_by_id.get(sref.source_asset_id or "")
+                target_page = page_of_number.get(sref.target_sheet_number)
+                if asset is None or target_page is None:
+                    continue
+                missing = {
+                    p for p in _HARVEST_PARAMS.get(asset.type, set())
+                    if p not in asset.measurements
+                }
+                if not missing:
+                    continue
+                harvested = await asyncio.to_thread(
+                    harvest_measurements, doc[target_page], missing
+                )
+                if harvested:
+                    asset.measurements.update(harvested)
+                    await repo.update_asset_measurements(
+                        asset.id,
+                        asset.measurements,
+                        "detail-referenced",
+                        max(asset.confidence, 0.9),
+                    )
+                    enriched += 1
+            if enriched:
+                await emit(
+                    RunEvent(
+                        stage="ingest:spatial",
+                        message=f"Harvested dimensions for {enriched} asset(s) from "
+                        "referenced sheets",
+                    )
+                )
     finally:
         doc.close()
     await repo.mark_ingested(document_id, pdf_type)

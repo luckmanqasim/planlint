@@ -102,6 +102,14 @@ class FakeRepository:
             row["sheet_id"] = sheet_id
             self.assets[asset.id] = row
 
+    async def update_asset_measurements(self, asset_id, measurements, source, confidence) -> None:
+        row = self.assets.get(asset_id)
+        if row is None:
+            return
+        row["measurements"] = {getattr(k, "value", k): v for k, v in measurements.items()}
+        row["source"] = source
+        row["confidence"] = confidence
+
     async def get_assets(self, project_id: str) -> list[dict]:
         return list(self.assets.values())
 

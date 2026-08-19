@@ -246,6 +246,27 @@ class GraphRepository:
             ],
         )
 
+    async def update_asset_measurements(
+        self,
+        asset_id: str,
+        measurements: dict,
+        source: str,
+        confidence: float,
+    ) -> None:
+        """Overwrite an asset's measurements/provenance with a merged set (the
+        caller merges locally, then writes the whole map) — used when a dimension
+        harvested from a referenced detail/section sheet enriches the asset."""
+        await self._run(
+            "MATCH (a:PhysicalAsset {id: $id}) "
+            "SET a.measurements = $m, a.source = $source, a.confidence = $confidence",
+            id=asset_id,
+            m=json.dumps(
+                {getattr(k, "value", k): v for k, v in measurements.items()}
+            ),
+            source=source,
+            confidence=confidence,
+        )
+
     async def get_assets(self, project_id: str) -> list[dict]:
         rows = await self._run(
             "MATCH (s:Sheet {project_id: $pid})-[:CONTAINS]->(a:PhysicalAsset) "
