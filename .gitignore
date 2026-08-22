@@ -4,10 +4,11 @@ __pycache__/
 .venv/
 .pytest_cache/
 
-# Node
+# Node / TypeScript
 node_modules/
 .next/
 next-env.d.ts
+*.tsbuildinfo
 
 # Runtime data
 data/
