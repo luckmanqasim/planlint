@@ -18,7 +18,9 @@ load_dotenv(_REPO_ROOT / ".env")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    neo4j_uri: str = "bolt://localhost:7687"
+    # 127.0.0.1, not 'localhost': on Windows the driver tries IPv6 (::1) first and
+    # stalls ~21s waiting for it to time out before falling back to IPv4.
+    neo4j_uri: str = "bolt://127.0.0.1:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "planlint123"
 
