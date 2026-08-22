@@ -15,17 +15,22 @@ import re
 from planlint.ingest.schedule import _group_lines
 from planlint.ingest.sheet_type import SHEET_NUMBER
 
+# A cover page mixes the sheet index with a symbols legend ('X-11 FIXTURE CALLOUT',
+# 'SECTION MARKER …'); these words in the "title" mark a legend row, not an index row.
+_LEGEND_WORDS = re.compile(r"\b(CALLOUT|MARKER|LEGEND|SYMBOL)\b")
+
 
 def _index_from_line(text: str) -> tuple[str, str] | None:
     """(`sheet_number`, `title`) from an index line whose FIRST token is the number
-    — anchoring on the start rejects prose that merely mentions another sheet."""
+    — anchoring on the start rejects prose that merely mentions another sheet, and a
+    legend-word title rejects the symbols legend that shares the cover page."""
     text = text.strip()
     m = SHEET_NUMBER.match(text.upper())
     if not m:
         return None
     number = m.group(1)
     title = re.sub(r"\s+", " ", text[m.end():].strip(" .-\t")).upper()
-    if len(title) < 3:  # a bare number with no title is not an index row
+    if len(title) < 3 or _LEGEND_WORDS.search(title):
         return None
     return number, title
 
