@@ -298,10 +298,11 @@ class GraphRepository:
             "MERGE (s)-[:HAS_DETAIL]->(n:Detail {document_id: $document_id, "
             "sheet_number: dt.sheet_number, number: dt.number}) "
             "SET n.id = dt.id, n.title = dt.title, n.bbox = dt.bbox, n.kind = dt.kind, "
-            "n.measurements = dt.measurements, n.notes = dt.notes, n.project_id = d.project_id "
+            "n.measurements = dt.measurements, n.notes = dt.notes, n.depth = dt.depth, "
+            "n.project_id = d.project_id "
             "WITH n, dt WHERE dt.source_asset_id IS NOT NULL "
             "MATCH (a:PhysicalAsset {id: dt.source_asset_id}) "
-            "MERGE (a)-[r:DETAILED_BY]->(n) SET r.kind = dt.kind",
+            "MERGE (a)-[r:DETAILED_BY]->(n) SET r.kind = dt.kind, r.depth = dt.depth",
             document_id=document_id,
             details=[
                 {
@@ -315,9 +316,26 @@ class GraphRepository:
                         {k.value: v for k, v in dt.measurements.items()}
                     ),
                     "notes": dt.notes,
+                    "depth": dt.depth,
                     "source_asset_id": dt.source_asset_id,
                 }
                 for dt in details
+            ],
+        )
+        # Second pass: chain edges (parent detail → the detail its region references).
+        await self._run(
+            "UNWIND $links AS lk "
+            "MATCH (p:Detail {document_id: $document_id, sheet_number: lk.psheet, number: lk.pnum}) "
+            "MATCH (c:Detail {document_id: $document_id, sheet_number: lk.csheet, number: lk.cnum}) "
+            "MERGE (p)-[:SEE_ALSO]->(c)",
+            document_id=document_id,
+            links=[
+                {
+                    "psheet": dt.parent_sheet, "pnum": dt.parent_number,
+                    "csheet": dt.sheet_number, "cnum": dt.number,
+                }
+                for dt in details
+                if dt.parent_sheet and dt.parent_number
             ],
         )
 
@@ -579,7 +597,7 @@ class GraphRepository:
             "category: sp.category, description: sp.description}] AS specs, "
             "[(a)-[:DETAILED_BY]->(dt:Detail) | {sheet_number: dt.sheet_number, "
             "number: dt.number, title: dt.title, bbox: dt.bbox, kind: dt.kind, "
-            "measurements: dt.measurements, notes: dt.notes, "
+            "measurements: dt.measurements, notes: dt.notes, depth: dt.depth, "
             "target_sheet_id: head([(sx:Sheet)-[:HAS_DETAIL]->(dt) | sx.id])}] AS details",
             pid=project_id,
             run_id=run_id,

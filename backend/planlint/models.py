@@ -122,6 +122,10 @@ class Detail(BaseModel):
     measurements: dict[Parameter, float] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
     source_asset_id: str | None = None  # the asset whose callout points here
+    depth: int = 0  # hops from the asset's plan callout (0 = directly referenced)
+    # the detail whose region referenced this one (by sheet+number, the node's key)
+    parent_sheet: str | None = None
+    parent_number: str | None = None
 
 
 class RegulationClause(BaseModel):

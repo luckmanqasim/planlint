@@ -54,6 +54,7 @@ def test_region_scoped_harvest_isolates_a_detail():
 
 
 async def test_detail_links_and_harvests_door(tmp_path, fake_repo, monkeypatch):
+    from planlint.ingest import resolver
     from planlint.ingest.details import VlmDetail
     from planlint.ingest.vlm import VlmEntity, VlmPage, VlmReference
 
@@ -62,11 +63,8 @@ async def test_detail_links_and_harvests_door(tmp_path, fake_repo, monkeypatch):
     doc = pymupdf.open()
     p0 = doc.new_page(width=612, height=792)  # plan: a door + a callout to 3/A1.7
     p0.insert_text((305, 262), "3/A1.7", fontsize=8)
-    p1 = doc.new_page(width=612, height=792)  # A1.7 detail sheet, detail 3 = a 30" width
-    p1.insert_text((60, 60), SCALE_TEXT, fontsize=9)
+    p1 = doc.new_page(width=612, height=792)  # A1.7 detail sheet
     p1.insert_text((520, 740), "A1.7", fontsize=12)
-    p1.draw_line((120, 300), (120 + 30 * 4.5, 300))
-    p1.insert_text((120, 294), '30"', fontsize=8)
     doc.save(str(pdf))
     doc.close()
 
@@ -77,8 +75,10 @@ async def test_detail_links_and_harvests_door(tmp_path, fake_repo, monkeypatch):
         )
 
     async def fake_detect_details(png, model):
-        # box already in PDF points (a region on A1.7 containing the 30" dim)
         return [VlmDetail(number="3", title="DOOR JAMB", box=(100, 250, 300, 400))]
+
+    async def fake_read_region(page, region, want, text_layer, model):
+        return {Parameter.CLEAR_WIDTH: 30.0}
 
     order = [SheetType.FLOOR_PLAN, SheetType.DETAIL]
     seen = {"i": 0}
@@ -89,7 +89,8 @@ async def test_detail_links_and_harvests_door(tmp_path, fake_repo, monkeypatch):
         return t
 
     monkeypatch.setattr(spatial, "detect_page", fake_detect_page)
-    monkeypatch.setattr(spatial, "detect_details", fake_detect_details)
+    monkeypatch.setattr(resolver, "detect_details", fake_detect_details)
+    monkeypatch.setattr(resolver, "read_region", fake_read_region)
     monkeypatch.setattr(spatial, "classify_sheet", fake_classify)
     row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
            "filename": "set.pdf", "path": str(pdf), "ingested": False}

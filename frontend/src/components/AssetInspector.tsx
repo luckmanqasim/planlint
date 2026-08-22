@@ -168,10 +168,17 @@ export default function AssetInspector({
             Detailed by ({asset.details.length})
           </div>
           <div className="flex flex-col gap-1.5">
-            {asset.details.map((d, i) => (
+            {[...asset.details]
+              .sort((a, b) => a.depth - b.depth)
+              .map((d, i) => (
               <div key={i} className="rounded border border-edge bg-surface-2/40 px-2 py-1.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate">
+                    {d.depth > 0 && (
+                      <span className="mr-1 text-ink-dim/70" title={`${d.depth} hop(s) down the reference chain`}>
+                        ↳
+                      </span>
+                    )}
                     <span className="font-mono text-ink">
                       {d.number}/{d.sheet_number}
                     </span>

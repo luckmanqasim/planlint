@@ -111,7 +111,9 @@ class FakeRepository:
                     "sheet_number": dt.sheet_number, "number": dt.number,
                     "title": dt.title, "bbox": list(dt.bbox), "kind": dt.kind,
                     "measurements": {getattr(k, "value", k): v for k, v in dt.measurements.items()},
-                    "notes": dt.notes, "source_asset_id": dt.source_asset_id,
+                    "notes": dt.notes, "depth": dt.depth,
+                    "parent_sheet": dt.parent_sheet, "parent_number": dt.parent_number,
+                    "source_asset_id": dt.source_asset_id,
                 }
             )
 

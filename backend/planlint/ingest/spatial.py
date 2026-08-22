@@ -23,10 +23,8 @@ from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.ocr import ocr_boxes
-from planlint.ingest.details import detect_details, region_notes
-from planlint.ingest.elevation import detect_elevation_page
-from planlint.ingest.harvest import harvest_measurements
 from planlint.ingest.references import ground_reference, nearest_asset
+from planlint.ingest.resolver import resolve_reference_chain
 from planlint.ingest.schedule import (
     OpeningSpec,
     _normalize_mark as normalize_mark,
@@ -723,108 +721,42 @@ async def ingest_floorplan(
                     "reference(s) to assets",
                 )
             )
-            # Localize the specific detail each callout points to, then read
-            # dimensions from THAT detail's region only. Scoping to detail 3 removes
-            # the multi-detail ambiguity a whole sheet has, so a stair/door reliably
-            # gets its dims. VLM-located (skipped in offline sample mode); the number
-            # is grounded against the callout's detail_num, the dims by the region
-            # grid. A detail no callout localizes contributes nothing (NEEDS_REVIEW).
+            # Follow the reference chain: from each asset's callout, localize the
+            # detail, read its region's grounded dimensions with the spatial reader,
+            # and follow the nested callouts that detail itself prints — so a deep
+            # dimension (a tread two hops away, drawn between stair lines) reaches the
+            # asset. Real-mode only (VLM); bounded + dedup-guarded in the resolver.
             collected_details: list[Detail] = []
             if not settings.planlint_offline_sample:
-                by_sheet: dict[str, list[SheetReference]] = {}
-                for sref in collected_references:
-                    by_sheet.setdefault(sref.target_sheet_number, []).append(sref)
-                for target_number, srefs in by_sheet.items():
-                    target_page = page_of_number.get(target_number)
-                    if target_page is None:
+                seeds = [
+                    (
+                        asset_by_id[sref.source_asset_id],
+                        sref.target_sheet_number,
+                        sref.detail_num,
+                        sref.kind,
+                    )
+                    for sref in collected_references
+                    if sref.source_asset_id in asset_by_id
+                ]
+                collected_details, asset_fills = await resolve_reference_chain(
+                    doc, model, page_of_number, sheet_registry, seeds, _HARVEST_PARAMS
+                )
+                for asset_id, fills in asset_fills.items():
+                    asset = asset_by_id.get(asset_id)
+                    if asset is None or not fills:
                         continue
-                    page = doc[target_page]
-                    try:
-                        _prims, labels = await asyncio.to_thread(
-                            geometry.extract_primitives, page
-                        )
-                        text_layer = await asyncio.to_thread(page.get_text)
-                        png = await asyncio.to_thread(
-                            lambda p=page: p.get_pixmap(
-                                matrix=pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)
-                            ).tobytes("png")
-                        )
-                        vdetails = await detect_details(png, model)
-                    except Exception as error:  # a sheet the VLM can't read → skip
-                        await emit(
-                            RunEvent(
-                                stage="ingest:spatial",
-                                message=f"{target_number}: detail detection failed "
-                                f"({error})",
-                                level="warning",
-                            )
-                        )
-                        continue
-                    by_number = {vd.number.strip(): vd for vd in reversed(vdetails)}
-                    elevation_stairs: list | None = None  # lazily read once per sheet
-                    for sref in srefs:
-                        vd = by_number.get(sref.detail_num.strip())
-                        asset = asset_by_id.get(sref.source_asset_id or "")
-                        if vd is None or asset is None:
-                            continue
-                        want = _HARVEST_PARAMS.get(asset.type, set())
-                        harvested: dict[Parameter, float] = {}
-                        if want and asset.type is AssetType.STAIR:
-                            # riser vs tread can't be told apart by magnitude — reuse
-                            # the elevation detector, which reads each as a labelled,
-                            # text-verified field.
-                            if elevation_stairs is None:
-                                try:
-                                    elevation_stairs = await detect_elevation_page(
-                                        png, text_layer, model
-                                    )
-                                except Exception:
-                                    elevation_stairs = []
-                            inside = [
-                                s for s in elevation_stairs
-                                if geometry._contains(
-                                    vd.box, ((s.bbox[0] + s.bbox[2]) / 2, (s.bbox[1] + s.bbox[3]) / 2)
-                                )
-                            ]
-                            pick = (
-                                inside[0] if len(inside) == 1
-                                else elevation_stairs[0] if len(elevation_stairs) == 1
-                                else None
-                            )
-                            if pick is not None:
-                                harvested = dict(pick.measurements)
-                        elif want:
-                            harvested = await asyncio.to_thread(
-                                harvest_measurements, page, want, vd.box
-                            )
-                        collected_details.append(
-                            Detail(
-                                sheet_number=target_number,
-                                number=vd.number.strip(),
-                                title=vd.title,
-                                bbox=tuple(vd.box),
-                                kind=sref.kind,
-                                measurements=dict(harvested),
-                                notes=region_notes(labels, vd.box),
-                                source_asset_id=asset.id,
-                            )
-                        )
-                        fill = {p: v for p, v in harvested.items() if p not in asset.measurements}
-                        if fill:
-                            asset.measurements.update(fill)
-                            await repo.update_asset_measurements(
-                                asset.id,
-                                asset.measurements,
-                                "detail-referenced",
-                                max(asset.confidence, 0.9),
-                            )
+                    asset.measurements.update(fills)
+                    await repo.update_asset_measurements(
+                        asset.id, asset.measurements, "detail-referenced",
+                        max(asset.confidence, 0.9),
+                    )
             if collected_details:
                 await repo.save_details(document_id, collected_details)
                 await emit(
                     RunEvent(
                         stage="ingest:spatial",
-                        message=f"Localized {len(collected_details)} referenced "
-                        "detail(s) and harvested their regions",
+                        message=f"Resolved {len(collected_details)} detail(s) across "
+                        "the reference chain",
                     )
                 )
 

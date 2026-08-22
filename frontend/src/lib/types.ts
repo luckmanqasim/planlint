@@ -37,6 +37,7 @@ export interface DetailRef {
   kind: string;
   measurements: Record<string, number>;
   notes: string[];
+  depth: number;
   target_sheet_id: string | null;
 }
 
