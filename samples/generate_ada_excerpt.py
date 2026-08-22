@@ -53,20 +53,7 @@ PAGE2 = [
     ),
     (
         "404.2.3 Clear Width.",
-        "Door openings shall provide a clear width of 32 inches (815 mm) minimum. "
-        "Clear openings of doorways with swinging doors shall be measured between "
-        "the face of the door and the stop, with the door open 90 degrees.",
-    ),
-    (
-        "404.2.5 Thresholds.",
-        "Thresholds, if provided at doorways, shall be 1/2 inch (13 mm) high maximum.",
-    ),
-    (
-        "404.2.9 Door and Gate Opening Force.",
-        "Fire doors shall have a minimum opening force allowable by the appropriate "
-        "administrative authority. The force for pushing or pulling open a door or "
-        "gate other than fire doors shall be 5 pounds (22.2 N) maximum for interior "
-        "hinged doors and gates.",
+        "Door openings shall provide a clear width of 32 inches (815 mm) minimum.",
     ),
 ]
 
@@ -106,11 +93,6 @@ PAGE4 = [
 PAGE5 = [
     ("Egress: Emergency Escape and Rescue Openings", ""),
     ("1030 Emergency Escape and Rescue Openings", ""),
-    (
-        "1030.1 General.",
-        "Sleeping rooms and habitable spaces shall be provided with emergency "
-        "escape and rescue openings complying with 1030.",
-    ),
     (
         "1030.2 Minimum Clear Width.",
         "An emergency escape and rescue opening, including an operable window "

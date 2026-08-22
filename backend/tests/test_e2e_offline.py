@@ -47,7 +47,7 @@ async def test_sample_project_end_to_end(fake_repo, fake_embedder):
 
     # Semantic: clause tree with correct hierarchy.
     clauses = {c["clause_id"]: c for c in fake_repo.clauses.values()}
-    assert {"403", "403.5.1", "404", "404.2", "404.2.3", "404.2.5", "404.2.9"} <= set(clauses)
+    assert {"403", "403.5.1", "404", "404.2", "404.2.3", "504.2", "1030.2"} <= set(clauses)
     assert clauses["404.2.3"]["parent_clause_id"] == "404.2"
 
     summary = await run_verification(
