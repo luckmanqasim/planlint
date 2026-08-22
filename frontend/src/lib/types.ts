@@ -23,6 +23,23 @@ export interface SheetRef {
   confidence?: number;
 }
 
+export interface Spec {
+  code: string;
+  category: string;
+  description: string;
+}
+
+export interface DetailRef {
+  sheet_number: string;
+  number: string;
+  title: string;
+  bbox: number[];
+  kind: string;
+  measurements: Record<string, number>;
+  notes: string[];
+  target_sheet_id: string | null;
+}
+
 export interface Asset {
   id: string;
   type: string;
@@ -33,6 +50,8 @@ export interface Asset {
   measurements: Record<string, number>;
   verdicts: VerdictEdge[];
   references: SheetRef[];
+  specs: Spec[];
+  details: DetailRef[];
 }
 
 export interface Sheet {

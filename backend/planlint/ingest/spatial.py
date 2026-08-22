@@ -23,6 +23,8 @@ from planlint.ingest import raster_geometry
 from planlint.ingest import vector_geometry as geometry
 from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.ocr import ocr_boxes
+from planlint.ingest.details import detect_details, region_notes
+from planlint.ingest.elevation import detect_elevation_page
 from planlint.ingest.harvest import harvest_measurements
 from planlint.ingest.references import ground_reference, nearest_asset
 from planlint.ingest.schedule import (
@@ -31,6 +33,7 @@ from planlint.ingest.schedule import (
     parse_schedule_index,
 )
 from planlint.ingest.sheet_index import parse_sheet_index
+from planlint.ingest.specs import detect_spec_codes, parse_spec_index
 from planlint.ingest.sheet_type import (
     SheetType,
     classify_sheet,
@@ -39,7 +42,16 @@ from planlint.ingest.sheet_type import (
 )
 from planlint.ingest.vector_geometry import classify_opening_vector
 from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, detect_from_labels
-from planlint.models import AssetType, BBox, Parameter, PhysicalAsset, RunEvent, SheetReference
+from planlint.models import (
+    AssetType,
+    BBox,
+    Detail,
+    Parameter,
+    PhysicalAsset,
+    RunEvent,
+    SheetReference,
+    Spec,
+)
 
 EmitFn = Callable[[RunEvent], Awaitable[None]]
 
@@ -270,9 +282,39 @@ async def ingest_floorplan(
                 )
             )
 
-        # The sheet index (cover page): {sheet_number → title}. Gives each sheet its
-        # number and lets reference callouts ('1/A3.0') resolve their target sheet.
+        # Fixture/finish/material specs (X-40, F-60) from the same schedule sheets,
+        # keyed by code — joined to the assets those codes sit on (a room's finish,
+        # a fixture in it). Context enrichment, not a verdict.
+        spec_index: dict[str, Spec] = {}
+        for i, st in enumerate(sheet_types):
+            if st is SheetType.SCHEDULE:
+                try:
+                    sx = await asyncio.to_thread(parse_spec_index, doc[i])
+                except Exception:
+                    sx = {}
+                for code, spec in sx.items():
+                    spec_index.setdefault(code, spec)
+        if spec_index:
+            await emit(
+                RunEvent(
+                    stage="ingest:spatial",
+                    message=f"Spec index: {len(spec_index)} fixture/finish code(s)",
+                )
+            )
+        collected_specs: list[tuple[str, str]] = []  # (asset_id, spec code)
+
+        # Sheet registry {sheet_number → title}: gives each sheet its number and lets
+        # reference callouts ('1/A3.0') resolve their target. Built from the PAGES
+        # themselves — each page's own title-block number is ground truth, and far
+        # more reliable than parsing the cover index, which a real cover mixes with a
+        # symbols legend (X-11 FIXTURE, SECTION MARKER…). The cover index is merged
+        # only as a supplement for a sheet no page self-identified.
         sheet_registry: dict[str, str] = {}
+        for i in range(total):
+            titles = await asyncio.to_thread(title_lines, doc[i])
+            number = await asyncio.to_thread(resolve_sheet_number, doc[i], titles, {})
+            if number:
+                sheet_registry.setdefault(number, titles[0] if titles else "")
         for i, st in enumerate(sheet_types):
             if st is SheetType.COVER_NOTES:
                 try:
@@ -631,6 +673,14 @@ async def ingest_floorplan(
                             sref.model_copy(update={"source_asset_id": host.id})
                         )
 
+            # Spec codes (X-40, F-60) printed on the plan → link the asset each sits
+            # on to its fixture/finish spec (grounded: only codes present in the index).
+            if spec_index and assets:
+                for code, cbox in await asyncio.to_thread(detect_spec_codes, page, spec_index):
+                    host = nearest_asset(cbox, assets)
+                    if host is not None:
+                        collected_specs.append((host.id, code))
+
             await record_sheet(page_index, page, assets, scale_text, scale)
             await emit(
                 RunEvent(
@@ -673,43 +723,119 @@ async def ingest_floorplan(
                     "reference(s) to assets",
                 )
             )
-            # Harvest a grounded dimension from each referenced detail/section
-            # sheet and enrich the referring asset — the compliance payoff. Only a
-            # missing, checkable parameter is filled, and only from a single
-            # unambiguous grounded value, so a plan measurement is never overridden
-            # and an ambiguous sheet contributes nothing.
-            enriched = 0
-            for sref in collected_references:
-                asset = asset_by_id.get(sref.source_asset_id or "")
-                target_page = page_of_number.get(sref.target_sheet_number)
-                if asset is None or target_page is None:
-                    continue
-                missing = {
-                    p for p in _HARVEST_PARAMS.get(asset.type, set())
-                    if p not in asset.measurements
-                }
-                if not missing:
-                    continue
-                harvested = await asyncio.to_thread(
-                    harvest_measurements, doc[target_page], missing
-                )
-                if harvested:
-                    asset.measurements.update(harvested)
-                    await repo.update_asset_measurements(
-                        asset.id,
-                        asset.measurements,
-                        "detail-referenced",
-                        max(asset.confidence, 0.9),
-                    )
-                    enriched += 1
-            if enriched:
+            # Localize the specific detail each callout points to, then read
+            # dimensions from THAT detail's region only. Scoping to detail 3 removes
+            # the multi-detail ambiguity a whole sheet has, so a stair/door reliably
+            # gets its dims. VLM-located (skipped in offline sample mode); the number
+            # is grounded against the callout's detail_num, the dims by the region
+            # grid. A detail no callout localizes contributes nothing (NEEDS_REVIEW).
+            collected_details: list[Detail] = []
+            if not settings.planlint_offline_sample:
+                by_sheet: dict[str, list[SheetReference]] = {}
+                for sref in collected_references:
+                    by_sheet.setdefault(sref.target_sheet_number, []).append(sref)
+                for target_number, srefs in by_sheet.items():
+                    target_page = page_of_number.get(target_number)
+                    if target_page is None:
+                        continue
+                    page = doc[target_page]
+                    try:
+                        _prims, labels = await asyncio.to_thread(
+                            geometry.extract_primitives, page
+                        )
+                        text_layer = await asyncio.to_thread(page.get_text)
+                        png = await asyncio.to_thread(
+                            lambda p=page: p.get_pixmap(
+                                matrix=pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)
+                            ).tobytes("png")
+                        )
+                        vdetails = await detect_details(png, model)
+                    except Exception as error:  # a sheet the VLM can't read → skip
+                        await emit(
+                            RunEvent(
+                                stage="ingest:spatial",
+                                message=f"{target_number}: detail detection failed "
+                                f"({error})",
+                                level="warning",
+                            )
+                        )
+                        continue
+                    by_number = {vd.number.strip(): vd for vd in reversed(vdetails)}
+                    elevation_stairs: list | None = None  # lazily read once per sheet
+                    for sref in srefs:
+                        vd = by_number.get(sref.detail_num.strip())
+                        asset = asset_by_id.get(sref.source_asset_id or "")
+                        if vd is None or asset is None:
+                            continue
+                        want = _HARVEST_PARAMS.get(asset.type, set())
+                        harvested: dict[Parameter, float] = {}
+                        if want and asset.type is AssetType.STAIR:
+                            # riser vs tread can't be told apart by magnitude — reuse
+                            # the elevation detector, which reads each as a labelled,
+                            # text-verified field.
+                            if elevation_stairs is None:
+                                try:
+                                    elevation_stairs = await detect_elevation_page(
+                                        png, text_layer, model
+                                    )
+                                except Exception:
+                                    elevation_stairs = []
+                            inside = [
+                                s for s in elevation_stairs
+                                if geometry._contains(
+                                    vd.box, ((s.bbox[0] + s.bbox[2]) / 2, (s.bbox[1] + s.bbox[3]) / 2)
+                                )
+                            ]
+                            pick = (
+                                inside[0] if len(inside) == 1
+                                else elevation_stairs[0] if len(elevation_stairs) == 1
+                                else None
+                            )
+                            if pick is not None:
+                                harvested = dict(pick.measurements)
+                        elif want:
+                            harvested = await asyncio.to_thread(
+                                harvest_measurements, page, want, vd.box
+                            )
+                        collected_details.append(
+                            Detail(
+                                sheet_number=target_number,
+                                number=vd.number.strip(),
+                                title=vd.title,
+                                bbox=tuple(vd.box),
+                                kind=sref.kind,
+                                measurements=dict(harvested),
+                                notes=region_notes(labels, vd.box),
+                                source_asset_id=asset.id,
+                            )
+                        )
+                        fill = {p: v for p, v in harvested.items() if p not in asset.measurements}
+                        if fill:
+                            asset.measurements.update(fill)
+                            await repo.update_asset_measurements(
+                                asset.id,
+                                asset.measurements,
+                                "detail-referenced",
+                                max(asset.confidence, 0.9),
+                            )
+            if collected_details:
+                await repo.save_details(document_id, collected_details)
                 await emit(
                     RunEvent(
                         stage="ingest:spatial",
-                        message=f"Harvested dimensions for {enriched} asset(s) from "
-                        "referenced sheets",
+                        message=f"Localized {len(collected_details)} referenced "
+                        "detail(s) and harvested their regions",
                     )
                 )
+
+        if collected_specs:
+            await repo.save_specs(document_id, spec_index, collected_specs)
+            await emit(
+                RunEvent(
+                    stage="ingest:spatial",
+                    message=f"Linked {len(set(collected_specs))} asset–spec pair(s)",
+                )
+            )
     finally:
         doc.close()
     await repo.mark_ingested(document_id, pdf_type)

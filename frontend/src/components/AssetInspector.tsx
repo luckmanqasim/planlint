@@ -161,6 +161,70 @@ export default function AssetInspector({
           </div>
         </div>
       )}
+
+      {asset.details.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-medium text-ink-dim">
+            Detailed by ({asset.details.length})
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {asset.details.map((d, i) => (
+              <div key={i} className="rounded border border-edge bg-surface-2/40 px-2 py-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate">
+                    <span className="font-mono text-ink">
+                      {d.number}/{d.sheet_number}
+                    </span>
+                    {d.title && <span className="ml-1.5 text-ink-dim">{d.title}</span>}
+                  </span>
+                  {onSelectSheet && d.target_sheet_id && (
+                    <button
+                      onClick={() => onSelectSheet(d.target_sheet_id!)}
+                      title={`Go to sheet ${d.sheet_number}`}
+                      className="shrink-0 rounded px-1 text-ink-dim hover:bg-surface-2 hover:text-ink"
+                    >
+                      ⧉
+                    </button>
+                  )}
+                </div>
+                {Object.entries(d.measurements).length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-x-3 text-ink-dim">
+                    {Object.entries(d.measurements).map(([k, v]) => (
+                      <span key={k}>
+                        {k.replace(/_/g, " ")} <span className="font-mono text-ink">{v}″</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {d.notes.length > 0 && (
+                  <div className="mt-0.5 line-clamp-2 text-ink-dim/80">{d.notes.join(" · ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {asset.specs.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-medium text-ink-dim">
+            Specified ({asset.specs.length})
+          </div>
+          <div className="flex flex-col gap-1">
+            {asset.specs.map((s, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs">
+                <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-ink">
+                  {s.code}
+                </span>
+                <span className="text-ink-dim">
+                  {s.description}
+                  {s.category && <span className="ml-1 opacity-60">({s.category})</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

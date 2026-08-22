@@ -96,6 +96,34 @@ class SheetReference(BaseModel):
     confidence: float = 1.0
 
 
+class Spec(BaseModel):
+    """A fixture / finish / material specification from a schedule, keyed by its
+    code (`X-40` → 'Jotul F3 stove', `F-60` → 'Hardwood Floor'). Shared: many assets
+    can reference the same spec, so the link — not the node — carries the asset."""
+
+    id: str = Field(default_factory=lambda: _new_id("spec"))
+    code: str  # normalized, e.g. 'X40', 'F60'
+    category: str = ""  # 'fixture' | 'finish' | 'material'
+    description: str = ""
+
+
+class Detail(BaseModel):
+    """A specific numbered detail/view on a sheet (detail 3 on A1.7), located by the
+    VLM and grounded against the callout that references it. Carries the content read
+    from *inside its region* — the dimensions and notes drawn there — so a referring
+    asset gets both a precise link and scoped, unambiguous measurements."""
+
+    id: str = Field(default_factory=lambda: _new_id("detail"))
+    sheet_number: str  # the sheet the detail lives on, e.g. 'A1.7'
+    number: str  # the detail's own number, e.g. '3'
+    title: str = ""
+    bbox: BBox  # the detail's region on the target sheet (PDF points)
+    kind: str = "detail"  # section | detail | elevation (from the referencing callout)
+    measurements: dict[Parameter, float] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+    source_asset_id: str | None = None  # the asset whose callout points here
+
+
 class RegulationClause(BaseModel):
     """One clause of a codebook, positioned in its section hierarchy."""
 

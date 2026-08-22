@@ -1,15 +1,14 @@
-"""Dimension harvest: read a grounded dimension off a referenced detail sheet and
-attribute it to the referring asset. Conservative — a single unambiguous grounded
-value only, and never overriding a plan measurement."""
+"""Dimension harvest: read grounded dimensions off a detail region. Conservative —
+a value is kept only when it's plausible for exactly one wanted parameter and the
+sole such candidate, so non-compliant values are caught and ambiguity is skipped.
+(The end-to-end asset enrichment via a referenced detail lives in test_details.py.)"""
 
 from __future__ import annotations
 
 import pymupdf
 
-from planlint.ingest import spatial
 from planlint.ingest.harvest import harvest_measurements
-from planlint.ingest.sheet_type import SheetType
-from planlint.models import AssetType, Parameter
+from planlint.models import Parameter
 
 # 3/4" = 1'-0"  →  scale = 16/72 in/pt  →  1 in = 4.5 pt.
 SCALE_TEXT = 'SCALE: 3/4" = 1\'-0"'
@@ -85,47 +84,3 @@ def test_harvest_needs_scale():
     got = harvest_measurements(page, {Parameter.RISER_HEIGHT})
     doc.close()
     assert got == {}
-
-
-async def test_harvest_enriches_referring_door(tmp_path, fake_repo, monkeypatch):
-    from planlint.ingest.vlm import VlmEntity, VlmPage, VlmReference
-
-    monkeypatch.setattr(spatial.settings, "planlint_offline_sample", True)
-    pdf = tmp_path / "set.pdf"
-    doc = pymupdf.open()
-    p0 = doc.new_page(width=612, height=792)  # plan: a door + a detail callout
-    p0.insert_text((305, 262), "3/A1.7", fontsize=8)  # grounds the target in the text layer
-    p1 = doc.new_page(width=612, height=792)  # A1.7 DOOR DETAIL, a single 30" leaf width
-    p1.insert_text((60, 60), SCALE_TEXT, fontsize=9)
-    p1.insert_text((100, 100), "DOOR DETAIL", fontsize=14)
-    p1.insert_text((520, 740), "A1.7", fontsize=12)  # the detail's own sheet number
-    p1.draw_line((100, 300), (100 + 30 * 4.5, 300))
-    p1.insert_text((100, 294), '30"', fontsize=8)
-    doc.save(str(pdf))
-    doc.close()
-
-    def fake_from_labels(labels):
-        return VlmPage(
-            entities=[VlmEntity(entity_type=AssetType.DOOR, name="D1", box=(300, 200, 340, 260))],
-            references=[VlmReference(kind="detail", detail_num="3", target_sheet="A1.7", box=(305, 262, 320, 272))],
-        )
-
-    order = [SheetType.FLOOR_PLAN, SheetType.DETAIL]
-    seen = {"i": 0}
-
-    def fake_classify(page):
-        t = order[min(seen["i"], len(order) - 1)]
-        seen["i"] += 1
-        return t
-
-    monkeypatch.setattr(spatial, "detect_from_labels", fake_from_labels)
-    monkeypatch.setattr(spatial, "classify_sheet", fake_classify)
-    row = {"id": "doc-1", "project_id": "proj-1", "kind": "floorplan",
-           "filename": "set.pdf", "path": str(pdf), "ingested": False}
-    fake_repo.documents["doc-1"] = row
-
-    await spatial.ingest_floorplan(pdf, row, fake_repo, model=None)
-
-    door = next(a for a in fake_repo.assets.values() if a["type"] == "door")
-    assert door["measurements"] == {"clear_width": 30.0}
-    assert door["source"] == "detail-referenced"

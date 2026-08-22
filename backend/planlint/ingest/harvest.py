@@ -21,7 +21,7 @@ Two rules keep it honest for a compliance tool:
 
 from __future__ import annotations
 
-from planlint.models import Parameter
+from planlint.models import BBox, Parameter
 from planlint.ingest import dimensions
 from planlint.ingest import vector_geometry as geometry
 
@@ -45,17 +45,36 @@ def _in(value: float, rng: tuple[float, float] | None) -> bool:
     return rng is not None and rng[0] <= value <= rng[1]
 
 
-def harvest_measurements(page, want: set[Parameter]) -> dict[Parameter, float]:
+def _center(box: BBox) -> tuple[float, float]:
+    return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+
+def harvest_measurements(
+    page, want: set[Parameter], region: BBox | None = None
+) -> dict[Parameter, float]:
     """Grounded measurements for the wanted parameters, read off `page`'s printed
-    dimensions. A parameter is filled only from a value that is plausible for it,
-    NOT plausible for any other wanted parameter, and the sole such candidate on the
-    sheet. Anything ambiguous is omitted (→ NEEDS_REVIEW), never guessed — and a
-    non-compliant value is kept, so the checker can flag it."""
+    dimensions. When `region` is given (a specific detail's box), only dimensions
+    inside it are read — scoping to detail 3 removes the multi-detail ambiguity that
+    a whole sheet has. A parameter is filled only from a value plausible for it, NOT
+    plausible for any other wanted parameter, and the sole such candidate. Anything
+    ambiguous is omitted (→ NEEDS_REVIEW), never guessed; a non-compliant value is
+    kept, so the checker can flag it."""
     primitives, labels = geometry.extract_primitives(page)
-    scale_text = next((lbl.text for lbl in labels if "SCALE" in lbl.text.upper()), None)
+    # A detail prints its own scale; prefer one inside the region, else the sheet's.
+    region_labels = (
+        [lbl for lbl in labels if geometry._contains(region, _center(lbl.bbox))]
+        if region is not None
+        else labels
+    )
+    scale_text = next(
+        (lbl.text for lbl in region_labels if "SCALE" in lbl.text.upper()), None
+    ) or next((lbl.text for lbl in labels if "SCALE" in lbl.text.upper()), None)
     scale = geometry.parse_scale(scale_text or "")
-    if scale is None:  # can't ground a dimension without the sheet's scale
+    if scale is None:  # can't ground a dimension without a scale
         return {}
+    if region is not None:
+        primitives = [p for p in primitives if geometry._contains(region, p.midpoint)]
+        labels = region_labels
     grid = dimensions.build_dimension_grid(primitives, labels, scale)
     values = sorted({round(d.value_in, 1) for d in grid})
 

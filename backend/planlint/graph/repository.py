@@ -15,9 +15,11 @@ from planlint.config import settings
 from planlint.models import (
     CheckResult,
     Constraint,
+    Detail,
     PhysicalAsset,
     RegulationClause,
     SheetReference,
+    Spec,
     VerdictType,
 )
 
@@ -38,7 +40,7 @@ class GraphRepository:
     # ------------------------------------------------------------- schema
 
     async def init_schema(self) -> None:
-        for label in ("Project", "Document", "Sheet", "PhysicalAsset", "Regulation", "Constraint"):
+        for label in ("Project", "Document", "Sheet", "PhysicalAsset", "Regulation", "Constraint", "Spec", "Detail"):
             await self._run(
                 f"CREATE CONSTRAINT {label.lower()}_id IF NOT EXISTS "
                 f"FOR (n:{label}) REQUIRE n.id IS UNIQUE"
@@ -76,11 +78,13 @@ class GraphRepository:
             "OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) "
             "OPTIONAL MATCH (d)-[:HAS_SHEET]->(s:Sheet) "
             "OPTIONAL MATCH (s)-[:CONTAINS]->(a:PhysicalAsset) "
+            "OPTIONAL MATCH (s)-[:HAS_DETAIL]->(dt:Detail) "
             "OPTIONAL MATCH (d)-[:HAS_CLAUSE]->(r:Regulation) "
             "OPTIONAL MATCH (r)-[:DEFINES]->(c:Constraint) "
+            "OPTIONAL MATCH (d)-[:HAS_SPEC]->(sp:Spec) "
             "WITH p, [x IN collect(DISTINCT d) | x.path] AS paths, "
-            "collect(DISTINCT d) + collect(DISTINCT s) + collect(DISTINCT a) "
-            "+ collect(DISTINCT r) + collect(DISTINCT c) AS descendants "
+            "collect(DISTINCT d) + collect(DISTINCT s) + collect(DISTINCT a) + collect(DISTINCT dt) "
+            "+ collect(DISTINCT r) + collect(DISTINCT c) + collect(DISTINCT sp) AS descendants "
             "FOREACH (n IN descendants | DETACH DELETE n) "
             "DETACH DELETE p "
             "RETURN paths",
@@ -139,11 +143,13 @@ class GraphRepository:
             "MATCH (d:Document {id: $id}) "
             "OPTIONAL MATCH (d)-[:HAS_SHEET]->(s:Sheet) "
             "OPTIONAL MATCH (s)-[:CONTAINS]->(a:PhysicalAsset) "
+            "OPTIONAL MATCH (s)-[:HAS_DETAIL]->(dt:Detail) "
             "OPTIONAL MATCH (d)-[:HAS_CLAUSE]->(r:Regulation) "
             "OPTIONAL MATCH (r)-[:DEFINES]->(c:Constraint) "
+            "OPTIONAL MATCH (d)-[:HAS_SPEC]->(sp:Spec) "
             "WITH d, d.path AS path, d.kind AS kind, d.project_id AS project_id, "
-            "collect(DISTINCT s) + collect(DISTINCT a) "
-            "+ collect(DISTINCT r) + collect(DISTINCT c) AS descendants "
+            "collect(DISTINCT s) + collect(DISTINCT a) + collect(DISTINCT dt) "
+            "+ collect(DISTINCT r) + collect(DISTINCT c) + collect(DISTINCT sp) AS descendants "
             "FOREACH (n IN descendants | DETACH DELETE n) "
             "DETACH DELETE d "
             "RETURN path, kind, project_id",
@@ -281,6 +287,40 @@ class GraphRepository:
             out.append(asset)
         return out
 
+    async def save_details(self, document_id: str, details: list[Detail]) -> None:
+        """Create the `Detail` nodes (a specific detail on a sheet) with the content
+        harvested from their region, and the `DETAILED_BY` edge from the referring
+        asset. MERGEd on (document, sheet_number, number) so re-runs are idempotent."""
+        await self._run(
+            "MATCH (d:Document {id: $document_id}) "
+            "UNWIND $details AS dt "
+            "MATCH (d)-[:HAS_SHEET]->(s:Sheet {sheet_number: dt.sheet_number}) "
+            "MERGE (s)-[:HAS_DETAIL]->(n:Detail {document_id: $document_id, "
+            "sheet_number: dt.sheet_number, number: dt.number}) "
+            "SET n.id = dt.id, n.title = dt.title, n.bbox = dt.bbox, n.kind = dt.kind, "
+            "n.measurements = dt.measurements, n.notes = dt.notes, n.project_id = d.project_id "
+            "WITH n, dt WHERE dt.source_asset_id IS NOT NULL "
+            "MATCH (a:PhysicalAsset {id: dt.source_asset_id}) "
+            "MERGE (a)-[r:DETAILED_BY]->(n) SET r.kind = dt.kind",
+            document_id=document_id,
+            details=[
+                {
+                    "id": dt.id,
+                    "sheet_number": dt.sheet_number,
+                    "number": dt.number,
+                    "title": dt.title,
+                    "bbox": list(dt.bbox),
+                    "kind": dt.kind,
+                    "measurements": json.dumps(
+                        {k.value: v for k, v in dt.measurements.items()}
+                    ),
+                    "notes": dt.notes,
+                    "source_asset_id": dt.source_asset_id,
+                }
+                for dt in details
+            ],
+        )
+
     # ---------------------------------------------------------- references
 
     async def save_references(
@@ -311,6 +351,40 @@ class GraphRepository:
                 for r in references
                 if r.source_asset_id
             ],
+        )
+
+    async def save_specs(
+        self,
+        document_id: str,
+        spec_index: dict[str, Spec],
+        links: list[tuple[str, str]],
+    ) -> None:
+        """Create the fixture/finish `Spec` nodes that assets actually reference and
+        the `SPECIFIED_BY` edges. Specs are MERGEd on (document, code) so re-runs are
+        idempotent; the edge is plain, so DETACH DELETE of either end cleans it up."""
+        pairs = sorted({(a, c) for a, c in links})
+        codes = {c for _, c in pairs}
+        specs = [spec_index[c] for c in codes if c in spec_index]
+        await self._run(
+            "MATCH (d:Document {id: $document_id}) "
+            "UNWIND $specs AS s "
+            "MERGE (d)-[:HAS_SPEC]->(sp:Spec {document_id: $document_id, code: s.code}) "
+            "SET sp.id = s.id, sp.category = s.category, sp.description = s.description, "
+            "sp.project_id = d.project_id",
+            document_id=document_id,
+            specs=[
+                {"id": s.id, "code": s.code, "category": s.category, "description": s.description}
+                for s in specs
+            ],
+        )
+        await self._run(
+            "UNWIND $pairs AS p "
+            "MATCH (a:PhysicalAsset {id: p.asset_id}) "
+            "MATCH (:Document {id: $document_id})-[:HAS_SPEC]->"
+            "(sp:Spec {document_id: $document_id, code: p.code}) "
+            "MERGE (a)-[:SPECIFIED_BY]->(sp)",
+            document_id=document_id,
+            pairs=[{"asset_id": a, "code": c} for a, c in pairs],
         )
 
     # ------------------------------------------------------------- clauses
@@ -500,7 +574,13 @@ class GraphRepository:
             "[x IN verdicts WHERE x IS NOT NULL] AS verdicts, "
             "[(a)-[ref:REFERENCES]->(t:Sheet) | {kind: ref.kind, "
             "detail_num: ref.detail_num, target_sheet_number: t.sheet_number, "
-            "target_sheet_id: t.id, confidence: ref.confidence}] AS references",
+            "target_sheet_id: t.id, confidence: ref.confidence}] AS references, "
+            "[(a)-[:SPECIFIED_BY]->(sp:Spec) | {code: sp.code, "
+            "category: sp.category, description: sp.description}] AS specs, "
+            "[(a)-[:DETAILED_BY]->(dt:Detail) | {sheet_number: dt.sheet_number, "
+            "number: dt.number, title: dt.title, bbox: dt.bbox, kind: dt.kind, "
+            "measurements: dt.measurements, notes: dt.notes, "
+            "target_sheet_id: head([(sx:Sheet)-[:HAS_DETAIL]->(dt) | sx.id])}] AS details",
             pid=project_id,
             run_id=run_id,
         )
@@ -511,6 +591,11 @@ class GraphRepository:
             asset.pop("embedding", None)
             asset["verdicts"] = row["verdicts"]
             asset["references"] = row["references"]
+            asset["specs"] = row["specs"]
+            details = row["details"]
+            for dt in details:
+                dt["measurements"] = json.loads(dt.get("measurements") or "{}")
+            asset["details"] = details
             assets_by_sheet.setdefault(row["sheet_id"], []).append(asset)
 
         sheets = []

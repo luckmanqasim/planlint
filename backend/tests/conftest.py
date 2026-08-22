@@ -53,6 +53,8 @@ class FakeRepository:
         self.extracted: set[str] = set()
         self.verdicts: list[dict] = []
         self.references: list[dict] = []
+        self.spec_links: list[dict] = []
+        self.details: list[dict] = []
 
     # -- documents
     async def get_documents(self, project_id: str) -> list[dict]:
@@ -101,6 +103,27 @@ class FakeRepository:
             row["measurements"] = {k.value: v for k, v in asset.measurements.items()}
             row["sheet_id"] = sheet_id
             self.assets[asset.id] = row
+
+    async def save_details(self, document_id, details) -> None:
+        for dt in details:
+            self.details.append(
+                {
+                    "sheet_number": dt.sheet_number, "number": dt.number,
+                    "title": dt.title, "bbox": list(dt.bbox), "kind": dt.kind,
+                    "measurements": {getattr(k, "value", k): v for k, v in dt.measurements.items()},
+                    "notes": dt.notes, "source_asset_id": dt.source_asset_id,
+                }
+            )
+
+    async def save_specs(self, document_id, spec_index, links) -> None:
+        for asset_id, code in sorted(set(links)):
+            spec = spec_index.get(code)
+            if spec is None:
+                continue
+            self.spec_links.append(
+                {"asset_id": asset_id, "code": code,
+                 "category": spec.category, "description": spec.description}
+            )
 
     async def update_asset_measurements(self, asset_id, measurements, source, confidence) -> None:
         row = self.assets.get(asset_id)
