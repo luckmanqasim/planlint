@@ -138,8 +138,13 @@ retry, never a corrupt graph.
 
 - **`PhysicalAsset`** — `type`, `label`, `bbox` (PDF points, top-left origin),
   `confidence`, `source` (`vector-snapped` / `raster-snapped` / `vlm-only` /
-  `schedule`), `measurements: dict[Parameter, float]`. This is what spatial
-  ingestion produces and what the checker consumes.
+  `schedule` / `detail-referenced`), `measurements: dict[Parameter, float]`. This is
+  what spatial ingestion produces and what the checker consumes.
+- **`SheetReference`** — a grounded plan callout: `kind` (section/detail/elevation),
+  `detail_num`, `target_sheet_number`, `bbox`, `source_asset_id`, `confidence`.
+- **`Detail`** — a specific numbered detail on a sheet: `sheet_number`, `number`,
+  `title`, `bbox`, `kind`, `measurements`, `notes`, `source_asset_id`.
+- **`Spec`** — a fixture/finish/material spec: `code`, `category`, `description`.
 - **`RegulationClause`** — `clause_id` ("404.2.3"), `title`, `hierarchy_path`
   ("Chapter 4 › 404 Doors › 404.2 Manual Doors"), `text`, `page`, `bbox`,
   `parent_clause_id`. The unit of the codebook tree.
@@ -209,14 +214,21 @@ else in the codebase talks to Neo4j.
 (:Document)-[:HAS_CLAUSE]->(:Regulation)-[:PARENT_OF]->(:Regulation)   // clause hierarchy
 (:Regulation)-[:DEFINES]->(:Constraint)                                // cached extraction
 (:PhysicalAsset)-[:COMPLIES_WITH|VIOLATES|NEEDS_REVIEW {run_id, measured, required, reason}]->(:Regulation)
+(:PhysicalAsset)-[:REFERENCES {kind, detail_num}]->(:Sheet)            // plan callout → target sheet
+(:Sheet)-[:HAS_DETAIL]->(:Detail)<-[:DETAILED_BY]-(:PhysicalAsset)     // the specific referenced detail
+(:Document)-[:HAS_SPEC]->(:Spec)<-[:SPECIFIED_BY]-(:PhysicalAsset)     // fixture/finish specs
 ```
 
 **Method groups**
 - Projects/documents: `create_project`, `get_project`, `delete_project`,
   `list_projects`, `create_document`, `get_documents`, `delete_document`,
   `set_document_manual_scale`, `mark_ingested`.
-- Sheets/assets: `create_sheet`, `set_sheet_scale`, `get_sheet`, `upsert_assets`,
+- Sheets/assets: `create_sheet` (stores `sheet_number`/`title`), `set_sheet_scale`,
+  `get_sheet`, `upsert_assets`, `update_asset_measurements` (detail-harvest enrich),
   `get_assets`.
+- Cross-sheet: `save_references` (asset→sheet), `save_details` (asset→detail),
+  `save_specs` (asset→fixture/finish spec). `results_payload` returns all three per
+  asset alongside verdicts. `Detail`/`Spec` are in `init_schema` + delete cascades.
 - Clauses: `upsert_clauses` (writes the tree + embeddings), `get_clauses`,
   `vector_search` (native vector index over clause embeddings), `ancestors`
   (walk `PARENT_OF` up).
@@ -251,7 +263,13 @@ the largest and most heuristic subsystem — and where the honest limitations li
    (foundation, roof, RCP/electrical, detail, cover) are recorded but not linted.
 3. **Per detected entity** (vector path): snap the box to geometry, then resolve
    its measurements by a strict **precedence** (see §10), attach `source` +
-   `confidence`, and keep the asset only if it carries something checkable.
+   `confidence`, and keep the asset only if it carries something checkable. Plan
+   reference callouts and fixture/finish codes are detected here and bound to the
+   nearest asset.
+4. **Cross-sheet pass** (after every sheet exists): ground each reference against
+   the sheet registry, then for each localize the specific detail it names and
+   harvest that detail's region back onto the asset (see the cross-sheet modules
+   below). Persist references, details, and specs.
 
 Key helpers here: `_resolve_mark` / `_resolve_callout` (join an opening to a
 schedule mark — VLM read, else nearest matching callout label, kind-restricted +
@@ -324,6 +342,24 @@ area, and a callout mark.
 One process-wide RapidOCR engine, reused by both scanned floor-plan labels and the
 codebook LLM parser's scan-verification. Degrades to empty results when RapidOCR
 (shipped with the `docling` extra) is unavailable.
+
+### Cross-sheet linking (`sheet_index`, `references`, `details`, `harvest`, `specs`)
+Read the set as a connected whole rather than one page in isolation:
+- `ingest/sheet_index.py` — `parse_sheet_index` reads the cover's `number → title`
+  list; the registry is built primarily from each page's own title-block number
+  (`sheet_type.resolve_sheet_number`), with the cover index as a supplement.
+- `ingest/references.py` — `ground_reference` accepts a plan callout (`1/A3.0`) only
+  when its target is corroborated by the text layer and/or the sheet registry;
+  `nearest_asset` binds it to the plan asset it sits on.
+- `ingest/details.py` — `detect_details` (VLM, mirrors `elevation.py`) boxes each
+  numbered detail on a referenced sheet; its number is grounded against the callout.
+- `ingest/harvest.py` — `harvest_measurements` reads dimensions **scoped to a
+  detail's region** (via the dimension grid), so a multi-detail sheet isn't
+  ambiguous; the value is attributed to the referring asset (`detail-referenced`
+  provenance) only when unambiguous — else the asset stays `NEEDS_REVIEW`.
+- `ingest/specs.py` — `parse_spec_index` + `detect_spec_codes` join fixture/finish
+  codes (`X-40`, `F-60`) printed on a plan to their schedule entry, grounded against
+  the parsed index.
 
 ---
 
@@ -435,6 +471,7 @@ takes a clear width from the longest-segment heuristic (that's opening-only).
 |---|---|---|
 | `schedule` | 0.95 | joined to a printed schedule size |
 | `vector-snapped` | 0.95 | box snapped to real CAD geometry |
+| `detail-referenced` | 0.90 | dimension harvested from the referenced detail/section |
 | `raster-snapped` | 0.80 | box snapped to pixel wall-mask |
 | `vlm-only` | 0.60 | model box, unconfirmed by geometry |
 
