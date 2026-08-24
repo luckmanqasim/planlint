@@ -46,6 +46,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [rightTab, setRightTab] = useState<"clauses" | "assets">("clauses");
   const [focusClauseId, setFocusClauseId] = useState<string | null>(null);
   const [codebookView, setCodebookView] = useState<CodebookView | null>(null);
+  const [dragKind, setDragKind] = useState<"floorplan" | "codebook" | null>(null);
   const { toasts, push: pushToast } = useToasts();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadKindRef = useRef<"floorplan" | "codebook">("floorplan");
@@ -74,6 +75,35 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   useEffect(refresh, [refresh]);
 
   const { events, running, runError, start: verify } = useVerificationRun(projectId, refresh);
+
+  const uploadPdf = useCallback(
+    async (kind: "floorplan" | "codebook", file: File) => {
+      if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+        setError("Only PDF files are supported.");
+        return;
+      }
+      await api.uploadDocument(projectId, kind, file);
+      pushToast(`Uploaded ${file.name} — run verification to analyze it`);
+      await refresh();
+    },
+    [projectId, pushToast, refresh],
+  );
+
+  useEffect(() => {
+    // Prevent browser navigation when a PDF is dropped outside a drop target.
+    function preventGlobalDrop(event: DragEvent) {
+      if (event.dataTransfer?.types.includes("Files")) {
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("dragover", preventGlobalDrop);
+    window.addEventListener("drop", preventGlobalDrop);
+    return () => {
+      window.removeEventListener("dragover", preventGlobalDrop);
+      window.removeEventListener("drop", preventGlobalDrop);
+    };
+  }, []);
 
   const sheets = useMemo(() => results?.sheets ?? [], [results]);
   const sheet: Sheet | null = sheets[sheetIndex] ?? null;
@@ -143,14 +173,43 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     fileInputRef.current?.click();
   }
 
+  function firstDroppedFile(event: React.DragEvent): File | null {
+    const files = event.dataTransfer.files;
+    if (!files || files.length === 0) return null;
+    return files[0] ?? null;
+  }
+
+  function onUploadDragOver(event: React.DragEvent, kind: "floorplan" | "codebook") {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragKind(kind);
+  }
+
+  function onUploadDragLeave() {
+    setDragKind(null);
+  }
+
+  async function onUploadDrop(event: React.DragEvent, kind: "floorplan" | "codebook") {
+    event.preventDefault();
+    setDragKind(null);
+    const file = firstDroppedFile(event);
+    if (!file) return;
+    try {
+      await uploadPdf(kind, file);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function onFileChosen(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     try {
-      await api.uploadDocument(projectId, uploadKindRef.current, file);
-      pushToast(`Uploaded ${file.name} — run verification to analyze it`);
-      refresh();
+      await uploadPdf(uploadKindRef.current, file);
+      setError(null);
     } catch (e) {
       setError(String(e));
     }
@@ -188,6 +247,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   }
 
   const documents = results?.documents ?? [];
+  const hasFloorplan = documents.some((doc) => doc.kind === "floorplan");
+  const hasCodebook = documents.some((doc) => doc.kind === "codebook");
+  const hasRequiredDocs = hasFloorplan && hasCodebook;
 
   return (
     <main className="flex h-screen flex-col">
@@ -240,12 +302,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         )}
         <button
           onClick={() => pickFile("floorplan")}
+          onDragOver={(event) => onUploadDragOver(event, "floorplan")}
+          onDrop={(event) => onUploadDrop(event, "floorplan")}
+          onDragLeave={onUploadDragLeave}
           className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 hover:bg-edge"
         >
           + Floor plan
         </button>
         <button
           onClick={() => pickFile("codebook")}
+          onDragOver={(event) => onUploadDragOver(event, "codebook")}
+          onDrop={(event) => onUploadDrop(event, "codebook")}
+          onDragLeave={onUploadDragLeave}
           className="rounded-lg border border-edge bg-surface-2 px-3 py-1.5 hover:bg-edge"
         >
           + Codebook
@@ -379,7 +447,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               hidden={hidden}
               onToggleHidden={toggleHidden}
             />
-          ) : documents.length === 0 ? (
+          ) : !hasRequiredDocs ? (
             <div className="flex h-full items-center justify-center p-8">
               <div className="w-full max-w-md rounded-xl border border-dashed border-edge p-8 text-center">
                 <h2 className="text-base font-semibold">Empty project</h2>
@@ -389,21 +457,35 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 <div className="mt-5 grid grid-cols-2 gap-3">
                   <button
                     onClick={() => pickFile("floorplan")}
-                    className="rounded-xl border border-edge bg-surface-2 px-4 py-6 hover:border-accent hover:bg-edge"
+                    onDragOver={(event) => onUploadDragOver(event, "floorplan")}
+                    onDrop={(event) => onUploadDrop(event, "floorplan")}
+                    onDragLeave={onUploadDragLeave}
+                    className={`rounded-xl border bg-surface-2 px-4 py-6 hover:bg-edge ${
+                      dragKind === "floorplan"
+                        ? "border-accent ring-2 ring-accent/40"
+                        : "border-edge hover:border-accent"
+                    }`}
                   >
                     <div aria-hidden className="text-2xl">
                       {KIND_ICON.floorplan}
                     </div>
-                    Add a floor plan
+                    Add or drop a floor plan
                   </button>
                   <button
                     onClick={() => pickFile("codebook")}
-                    className="rounded-xl border border-edge bg-surface-2 px-4 py-6 hover:border-accent hover:bg-edge"
+                    onDragOver={(event) => onUploadDragOver(event, "codebook")}
+                    onDrop={(event) => onUploadDrop(event, "codebook")}
+                    onDragLeave={onUploadDragLeave}
+                    className={`rounded-xl border bg-surface-2 px-4 py-6 hover:bg-edge ${
+                      dragKind === "codebook"
+                        ? "border-accent ring-2 ring-accent/40"
+                        : "border-edge hover:border-accent"
+                    }`}
                   >
                     <div aria-hidden className="text-2xl">
                       {KIND_ICON.codebook}
                     </div>
-                    Add a codebook
+                    Add or drop a codebook
                   </button>
                 </div>
               </div>
