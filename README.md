@@ -12,10 +12,7 @@ as a deterministic, auditable edge in a Neo4j graph:
 (:Regulation {clause: "ADA 404.2.3"})
 ```
 
-<!-- Lead visual. Swap in docs/images/demo.gif (record it ~900px wide) once ready —
-     a short loop: click the red D2 door → it spotlights → the clause scrolls in.
-     Until then the static project view stands in. -->
-![PlanLint — click a violation, the failing clause appears beside it](docs/images/project-page.png)
+![PlanLint demo — click a violation and the failing clause appears beside it](docs/images/demo.gif)
 
 A dual-pane viewer renders the plan with green / red / amber overlays; click a red
 box and the exact failing clause scrolls into view beside it.
