@@ -258,6 +258,46 @@ def snap_box(
     return (min(xs), min(ys), max(xs), max(ys)), True
 
 
+# A double-line (often hatched) wall spans up to this across its section, so the
+# room-facing inner line sits within this band of the outer line the first pass may
+# have snapped to. A wall corner is called when a parallel wall's endpoint lands
+# within _CORNER_TOL_PT of a perpendicular wall's offset.
+_WALL_GROUP_PT = 18.0
+_CORNER_TOL_PT = 6.0
+
+
+def _corner_snap(
+    edge: float | None,
+    runs: list[tuple[float, float, float]],
+    anchors: list[float],
+    inner: int,
+) -> float | None:
+    """Refine one room edge to the interior face of its wall, using the corners.
+
+    `runs` are the wall segments parallel to this edge as (offset, lo, hi);
+    `anchors` are the offsets of the two perpendicular edges. Among segments within
+    a wall-group of `edge` whose endpoint (`lo`/`hi`) coincides with a perpendicular
+    wall — a real corner — pick the innermost: `inner=+1` the largest offset (a top
+    or left interior face), `-1` the smallest (bottom/right). A double-line wall's
+    inner face is often broken at the centre by an opening, so the first pass can't
+    reach it by spanning the centre and settles on the continuous outer line; but the
+    inner face's segments still *end at the corner walls*, which this keys off. The
+    corner requirement also rejects stray non-wall lines. Falls back to `edge` when
+    nothing corners (single-line walls already sit on the right line).
+    """
+    if edge is None or not anchors:
+        return edge
+    candidates = [
+        off
+        for off, lo, hi in runs
+        if abs(off - edge) <= _WALL_GROUP_PT
+        and any(min(abs(lo - a), abs(hi - a)) <= _CORNER_TOL_PT for a in anchors)
+    ]
+    if not candidates:
+        return edge
+    return max(candidates) if inner > 0 else min(candidates)
+
+
 def snap_room_box(
     vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = ()
 ) -> tuple[BBox, bool]:
@@ -268,11 +308,14 @@ def snap_room_box(
     unioning whatever short interior clutter (door leaves, fixtures, dimension
     ticks) happens to sit inside. Here each edge instead moves to the nearest
     axis-aligned wall within ROOM_EDGE_SEARCH_PT whose run spans the room across
-    that edge. Runs that terminate at a text label (dimension/label lines) are
-    excluded so an edge doesn't snap to a dimension line instead of the wall.
-    Edges with no such wall keep the VLM position, and the box is only reported
-    snapped when at least two edges found a wall — a lone match is too weak to
-    trust, so we fall back to the (wall-to-wall) VLM box instead.
+    that edge, then is refined onto the wall's room-facing inner face via the
+    corners (`_corner_snap`) — without which a double-line wall snaps to its outer
+    line whenever the inner face is broken at the centre by an opening. Runs that
+    terminate at a text label (dimension/label lines) are excluded so an edge
+    doesn't snap to a dimension line instead of the wall. Edges with no such wall
+    keep the VLM position, and the box is only reported snapped when at least two
+    edges found a wall — a lone match is too weak to trust, so we fall back to the
+    (wall-to-wall) VLM box instead.
     """
     x0, y0, x1, y1 = vlm_box
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -300,6 +343,16 @@ def snap_room_box(
     top, bottom = nearest(y0, horizontals, cx), nearest(y1, horizontals, cx)
     if sum(edge is not None for edge in (left, right, top, bottom)) < 2:
         return vlm_box, False
+
+    # Refine each edge onto the interior wall face using the perpendicular walls as
+    # corner anchors (first-pass offsets — within tolerance of the true corner).
+    vx = [v for v in (left, right) if v is not None]
+    hy = [v for v in (top, bottom) if v is not None]
+    top = _corner_snap(top, horizontals, vx, inner=+1)
+    bottom = _corner_snap(bottom, horizontals, vx, inner=-1)
+    left = _corner_snap(left, verticals, hy, inner=+1)
+    right = _corner_snap(right, verticals, hy, inner=-1)
+
     return (
         left if left is not None else x0,
         top if top is not None else y0,

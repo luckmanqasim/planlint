@@ -170,6 +170,39 @@ def test_snap_room_box_no_walls_keeps_vlm_box():
     assert box == vlm_box
 
 
+def _double_wall_room():
+    """A room whose walls are drawn as double lines. Interior faces at
+    100/300 (x) and 100/200 (y); outer faces 8 pt further out. The top inner
+    face is BROKEN at the centre by an opening (a window) — two segments that
+    end at the side walls but leave a gap across the middle."""
+    return [
+        # left wall: outer + inner verticals
+        Primitive(p0=(92.0, 92.0), p1=(92.0, 208.0)),
+        Primitive(p0=(100.0, 100.0), p1=(100.0, 200.0)),
+        # right wall
+        Primitive(p0=(308.0, 92.0), p1=(308.0, 208.0)),
+        Primitive(p0=(300.0, 100.0), p1=(300.0, 200.0)),
+        # top wall: continuous OUTER line, and an INNER line broken at the centre
+        Primitive(p0=(92.0, 92.0), p1=(308.0, 92.0)),
+        Primitive(p0=(100.0, 100.0), p1=(180.0, 100.0)),  # inner, left of the opening
+        Primitive(p0=(220.0, 100.0), p1=(300.0, 100.0)),  # inner, right of the opening
+        # bottom wall: outer + (continuous) inner
+        Primitive(p0=(92.0, 208.0), p1=(308.0, 208.0)),
+        Primitive(p0=(100.0, 200.0), p1=(300.0, 200.0)),
+    ]
+
+
+def test_snap_room_box_takes_inner_face_of_double_wall():
+    # The VLM box is biased UP — its top sits nearer the outer top line (92) than
+    # the inner one (100). Because the inner line is broken by the opening it can't
+    # be reached by spanning the centre, so the naive nearest picks the outer line.
+    # Corner refinement must pull the top down onto the inner face at y=100.
+    vlm_box = (110.0, 94.0, 290.0, 196.0)
+    box, snapped = snap_room_box(vlm_box, _double_wall_room())
+    assert snapped
+    assert box == (100.0, 100.0, 300.0, 200.0)  # every edge on the interior face
+
+
 def test_snap_box_ignores_leader_touching_text():
     # A door leaf + a callout leader whose far end sits under its bubble text.
     # Without the text filter the leader would stretch the box to x=160.
