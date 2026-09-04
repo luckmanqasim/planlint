@@ -252,7 +252,8 @@ the largest and most heuristic subsystem — and where the honest limitations li
 
 ### `ingest/spatial.py` — the orchestrator
 `ingest_floorplan(pdf, document, repo, model, emit)`:
-1. **Document-level pass first**: classify every page once (`sheet_type.py`), then
+1. **Document-level pass first**: classify every page once (`_classify_sheet` →
+   `sheet_type.py`, with the VLM/OCR fallback below for no-text pages), then
    build one **schedule index** (`schedule.parse_schedule_index`) merged across all
    schedule sheets, so an opening's callout can be joined to its size regardless of
    which sheet the schedule is on.
@@ -277,10 +278,15 @@ proximity-bound), `_extent_axis`, `_printed_area_present` (ground a room's area
 against the text layer), `_analyze_page` (PyMuPDF primitives/labels + render).
 
 ### `ingest/sheet_type.py`
-Deterministic, **title-driven** classification. Reads the largest title-tier text
-lines (a drawing title is typeset larger than the callouts that mention other
-sheets) and maps them to a `SheetType`. A real schedule sheet wins over a plain
-majority vote. This is what stops the plan detector from running on an elevation.
+**Title-driven** classification. Reads the largest title-tier text lines (a drawing
+title is typeset larger than the callouts that mention other sheets) and maps them
+to a `SheetType`. A schedule or RCP/electrical title wins over a plain majority vote
+(so `…ELECTRICAL PLAN` routes to skip, not the plan detector; `ELEC` is recognized).
+A **flattened or scanned page has no text layer**, so classification falls back — in
+`spatial._classify_sheet` — to the **vision model** when one is available (fast, no
+OCR dependency, reads the whole layout via `vlm.classify_sheet_page`), else **OCR**
+offline (`title_lines_from_ocr`), else `OTHER`. This is what stops the plan detector
+from running on an elevation, RCP or detail sheet.
 
 ### `ingest/vector_geometry.py`
 Pure math over PyMuPDF primitives — no LLM. The deterministic backbone:
@@ -288,9 +294,11 @@ Pure math over PyMuPDF primitives — no LLM. The deterministic backbone:
   inches-per-point from `1/4" = 1'-0"` etc.).
 - `parse_dimension_label` — reads a CAD dimension, and **rejects numbers embedded
   in structural/material notes** (`2X12 JOISTS @ 16" OC`).
-- `snap_box` / `snap_room_box` — snap a VLM box to the real primitives (rooms snap
-  to bounding walls; text-terminated segments excluded so boxes hug walls, not
-  annotation).
+- `snap_box` / `snap_room_box` — snap a VLM box to the real primitives. A room's
+  edges move to the bounding wall runs, judged by **coverage of the room's extent**
+  (a doorway at the room's centre no longer defeats the snap) and refined onto the
+  room-facing **inner** face via the corners where perpendicular walls meet;
+  text-terminated segments are excluded so boxes hug walls, not annotation.
 - `build_wall_runs` + `classify_opening_vector` — grade a claimed opening against
   the wall geometry, tri-state: `snapped` (real flanked gap), `refuted`
   (hatching/fill occupies it → dropped), `unknown` (keep for review). The snapped
@@ -320,10 +328,14 @@ only output — it is joined to a real plan opening by callout, never emitted as
 standalone (locationless) asset.
 
 ### `ingest/raster_geometry.py`
-For scanned pages: OpenCV wall-mask analysis. Flood-fills room interiors (openings
-plugged so fills can't leak), snaps opening widths against pixels, and
-cross-checks printed vs. computed area (`area_agreement`, `fill_area_to_m2`). The
-weakest path — no dimension grid, no schedule text.
+For scanned pages: OpenCV wall-mask analysis (the wall-opening kernel is capped,
+`_MAX_OPEN_PX`, so a thin interior partition isn't erased with the noise). A room box
+is **reconciled per edge** (`reconcile_room_box`): the flood-filled interior and the
+VLM box are combined edge by edge, keeping whichever a wall backs in the mask (fill
+where it stopped at a wall, VLM where the fill floated in open space through a
+doorway), and the fill supplies the interior area. Opening widths are snapped against
+pixels, and printed vs. computed area is cross-checked (`area_agreement`,
+`fill_area_to_m2`). The weakest path — no dimension grid, no schedule text.
 
 ### `ingest/elevation.py`
 `detect_elevation_page` reads the **vertical** dimensions a plan can't show (stair
