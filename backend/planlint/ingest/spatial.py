@@ -199,7 +199,13 @@ def _snap_raster_entities(
     Openings are judged first; their (snapped or claimed) boxes plug the wall
     barrier so room flood-fills cannot escape through them. Returns
     {entity_index: (bbox, width_pt | None, fill_area_pt2 | None)} for every
-    entity the pixels could confirm. Sync and CPU-bound — call via to_thread."""
+    entity the pixels could confirm. Sync and CPU-bound — call via to_thread.
+
+    A space's box is reconciled edge by edge between the VLM box and the flood-fill
+    box (`reconcile_room_box`): a fill edge that a wall backs is trusted (it found
+    the true wall), one floating in open space is a leak and the VLM edge is kept.
+    The flood fill also contributes its interior area for cross-checking a printed
+    floor area."""
     if analysis is None:
         return {}
     results: dict[int, tuple] = {}
@@ -231,7 +237,9 @@ def _snap_raster_entities(
             analysis, entity.box, plugs=plugs, exclude_points_pt=others
         )
         if snapped is not None:
-            results[index] = (snapped[0], None, snapped[1])
+            # Reconcile the VLM box with the fill box per edge; take the fill area.
+            box = raster_geometry.reconcile_room_box(analysis, entity.box, snapped[0])
+            results[index] = (box, None, snapped[1])
     return results
 
 
@@ -490,7 +498,16 @@ async def ingest_floorplan(
                         confidence = 0.95 if snapped else 0.6
                 elif index in raster_snaps:
                     bbox, opening_width_pt, fill_area_pt2 = raster_snaps[index]
-                    source, confidence = "raster-snapped", 0.8
+                    if entity.entity_type in _SPACE_TYPES:
+                        # A space's box is reconciled VLM/fill (see
+                        # _snap_raster_entities): raster-grounded only if a wall
+                        # backed at least one edge (else it's the untouched VLM box).
+                        if bbox == entity.box:
+                            source, confidence = "vlm-only", 0.6
+                        else:
+                            source, confidence = "raster-snapped", 0.8
+                    else:
+                        source, confidence = "raster-snapped", 0.8
                 else:
                     bbox, source, confidence = entity.box, "vlm-only", 0.6
                 measurements: dict[Parameter, float] = {}

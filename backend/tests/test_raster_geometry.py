@@ -133,6 +133,41 @@ def test_opening_with_no_wall_nearby_is_unknown(analysis):
     assert result.kind == "unknown"
 
 
+def test_raster_space_reconciles_box_to_walls(analysis):
+    # A space's box is reconciled edge-by-edge between the VLM box and the fill.
+    # Every sloppy VLM edge here is backed by a real wall, so all four expand to the
+    # walls; the fill's interior area comes along for the printed-area cross-check.
+    from planlint.ingest.spatial import _snap_raster_entities
+    from planlint.ingest.vlm import VlmEntity
+    from planlint.models import AssetType
+
+    entities = [VlmEntity(entity_type=AssetType.ROOM, name="A", box=ROOM_A_BOX)]
+    results = _snap_raster_entities(analysis, entities)
+    assert 0 in results
+    bbox, width_pt, fill_area_pt2 = results[0]
+    x0, y0, x1, y1 = bbox
+    assert abs(x0 - 24) <= 4 and abs(y0 - 24) <= 4
+    assert abs(x1 - 198) <= 4 and abs(y1 - 276) <= 4
+    assert width_pt is None
+    assert fill_area_pt2 is not None and fill_area_pt2 > 0
+
+
+def test_reconcile_room_box_rejects_leaked_edge(analysis):
+    # A fill whose right edge floated into room B's open interior (x=260, no wall)
+    # is a leak: that edge falls back to the VLM box, while the three wall-backed
+    # edges expand to the walls.
+    box = rg.reconcile_room_box(analysis, ROOM_A_BOX, (24.0, 24.0, 260.0, 276.0))
+    assert box[2] == 180.0  # right kept at the VLM edge (leak rejected)
+    assert abs(box[0] - 24) <= 1 and abs(box[1] - 24) <= 1 and abs(box[3] - 276) <= 1
+
+
+def test_reconcile_room_box_agreeing_edges_keep_vlm(analysis):
+    # When the fill and VLM edges agree within a wall thickness, keep the clean VLM
+    # edge rather than the fill's slightly different one.
+    box = rg.reconcile_room_box(analysis, ROOM_A_BOX, (38.0, 40.0, 180.0, 250.0))
+    assert box == ROOM_A_BOX
+
+
 def test_area_conversion_and_agreement():
     # 100 pt² at 1 inch/pt = 100 in² = 0.0645 m².
     assert rg.fill_area_to_m2(100.0, 1.0) == pytest.approx(0.064516)
