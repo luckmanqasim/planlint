@@ -517,8 +517,9 @@ reconciled on failure; effect cleanup mandatory.
   measured, its governing clauses), a distinct accent card pinned atop the right pane.
 - `AssetIndex.tsx` — browse every asset on the sheet, grouped worst-verdict-first.
 - `CanvasLegend.tsx` — the overlay key that is also a verdict filter.
-- `CodebookModal.tsx` — renders one codebook PDF page with the clause boxed
-  ("view in codebook").
+- `CodebookModal.tsx` — renders one codebook PDF page ("view in codebook"), with
+  the clause boxed when it carries a bbox (Docling parse only; the LLM/simple parser
+  transcribes to markdown and keeps no coordinates, so the modal just shows the page).
 - `RunProgress.tsx` — live run feedback (latest message + progress bar + full log).
 - `Toasts.tsx` — transient success notices (errors are persistent, elsewhere).
 - `ConfirmDialog.tsx` — minimal accessible confirm modal.
