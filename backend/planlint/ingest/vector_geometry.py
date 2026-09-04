@@ -298,6 +298,11 @@ def _corner_snap(
     return max(candidates) if inner > 0 else min(candidates)
 
 
+# A bounding wall need not cross the room's centre (an opening — a doorway — often
+# sits there); it must merely cover this fraction of the room's extent along the edge.
+_ROOM_EDGE_COVER_FRAC = 0.5
+
+
 def snap_room_box(
     vlm_box: BBox, primitives: list[Primitive], labels: Sequence[TextLabel] = ()
 ) -> tuple[BBox, bool]:
@@ -307,51 +312,53 @@ def snap_room_box(
     structural — so running a room through the opening snap corrupts its box by
     unioning whatever short interior clutter (door leaves, fixtures, dimension
     ticks) happens to sit inside. Here each edge instead moves to the nearest
-    axis-aligned wall within ROOM_EDGE_SEARCH_PT whose run spans the room across
-    that edge, then is refined onto the wall's room-facing inner face via the
-    corners (`_corner_snap`) — without which a double-line wall snaps to its outer
-    line whenever the inner face is broken at the centre by an opening. Runs that
-    terminate at a text label (dimension/label lines) are excluded so an edge
-    doesn't snap to a dimension line instead of the wall. Edges with no such wall
-    keep the VLM position, and the box is only reported snapped when at least two
-    edges found a wall — a lone match is too weak to trust, so we fall back to the
-    (wall-to-wall) VLM box instead.
+    axis-aligned **merged wall run** within ROOM_EDGE_SEARCH_PT that covers at least
+    _ROOM_EDGE_COVER_FRAC of the room's extent along that edge, then is refined onto
+    the wall's room-facing inner face via the corners (`_corner_snap`). Merged runs
+    (not raw segments) and fractional coverage (not centre-crossing) matter for real
+    drawings: walls arrive fragmented into many short collinear segments, and a
+    room's centre commonly lands in a doorway, so a segment/centre test would miss
+    the wall entirely and leave the edge unsnapped. Runs that terminate at a text
+    label (dimension/label lines) are excluded so an edge doesn't snap to a
+    dimension line. Edges with no such wall keep the VLM position, and the box is
+    only reported snapped when at least two edges found a wall — a lone match is too
+    weak to trust, so we fall back to the (wall-to-wall) VLM box instead.
     """
     x0, y0, x1, y1 = vlm_box
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    runs = build_wall_runs(primitives, labels)
+    verticals = [r for r in runs if r.orient == "v"]    # offset = x, intervals over y
+    horizontals = [r for r in runs if r.orient == "h"]  # offset = y, intervals over x
 
-    verticals: list[tuple[float, float, float]] = []  # (x, y_lo, y_hi)
-    horizontals: list[tuple[float, float, float]] = []  # (y, x_lo, x_hi)
-    for p in primitives:
-        if p.length < WALL_MIN_PT or _touches_text(p, labels):
-            continue
-        (ax0, ay0), (ax1, ay1) = p.p0, p.p1
-        if abs(ax1 - ax0) <= _AXIS_TOL_PT:
-            verticals.append(((ax0 + ax1) / 2, min(ay0, ay1), max(ay0, ay1)))
-        elif abs(ay1 - ay0) <= _AXIS_TOL_PT:
-            horizontals.append(((ay0 + ay1) / 2, min(ax0, ax1), max(ax0, ax1)))
+    def coverage(run: WallRun, lo: float, hi: float) -> float:
+        span = max(hi - lo, 1e-6)
+        return sum(max(0.0, min(b, hi) - max(a, lo)) for a, b in run.intervals) / span
 
-    def nearest(target: float, walls: list[tuple[float, float, float]], across: float) -> float | None:
+    def nearest(target: float, candidates: list[WallRun], lo: float, hi: float) -> float | None:
         best: float | None = None
-        for coord, lo, hi in walls:
-            if abs(coord - target) <= ROOM_EDGE_SEARCH_PT and lo - _AXIS_TOL_PT <= across <= hi + _AXIS_TOL_PT:
-                if best is None or abs(coord - target) < abs(best - target):
-                    best = coord
+        for r in candidates:
+            if abs(r.offset - target) <= ROOM_EDGE_SEARCH_PT and coverage(r, lo, hi) >= _ROOM_EDGE_COVER_FRAC:
+                if best is None or abs(r.offset - target) < abs(best - target):
+                    best = r.offset
         return best
 
-    left, right = nearest(x0, verticals, cy), nearest(x1, verticals, cy)
-    top, bottom = nearest(y0, horizontals, cx), nearest(y1, horizontals, cx)
+    left = nearest(x0, verticals, y0, y1)
+    right = nearest(x1, verticals, y0, y1)
+    top = nearest(y0, horizontals, x0, x1)
+    bottom = nearest(y1, horizontals, x0, x1)
     if sum(edge is not None for edge in (left, right, top, bottom)) < 2:
         return vlm_box, False
 
     # Refine each edge onto the interior wall face using the perpendicular walls as
-    # corner anchors (first-pass offsets — within tolerance of the true corner).
+    # corner anchors (first-pass offsets — within tolerance of the true corner). The
+    # runs' individual intervals carry the segment endpoints where the corners live.
     vx = [v for v in (left, right) if v is not None]
     hy = [v for v in (top, bottom) if v is not None]
-    top = _corner_snap(top, horizontals, vx, inner=+1)
-    bottom = _corner_snap(bottom, horizontals, vx, inner=-1)
-    left = _corner_snap(left, verticals, hy, inner=+1)
-    right = _corner_snap(right, verticals, hy, inner=-1)
+    htuples = [(r.offset, a, b) for r in horizontals for a, b in r.intervals]
+    vtuples = [(r.offset, a, b) for r in verticals for a, b in r.intervals]
+    top = _corner_snap(top, htuples, vx, inner=+1)
+    bottom = _corner_snap(bottom, htuples, vx, inner=-1)
+    left = _corner_snap(left, vtuples, hy, inner=+1)
+    right = _corner_snap(right, vtuples, hy, inner=-1)
 
     return (
         left if left is not None else x0,

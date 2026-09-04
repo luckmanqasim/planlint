@@ -203,6 +203,29 @@ def test_snap_room_box_takes_inner_face_of_double_wall():
     assert box == (100.0, 100.0, 300.0, 200.0)  # every edge on the interior face
 
 
+def _room_with_center_doorway():
+    """Single-line walls, but the top wall is broken by a wide central doorway —
+    two wall segments that leave a gap across the middle, so no top segment crosses
+    the room's centre though together they cover most of the width."""
+    return [
+        Primitive(p0=(96.0, 96.0), p1=(96.0, 204.0)),    # left
+        Primitive(p0=(304.0, 96.0), p1=(304.0, 204.0)),  # right
+        Primitive(p0=(96.0, 96.0), p1=(170.0, 96.0)),    # top, left of the doorway
+        Primitive(p0=(230.0, 96.0), p1=(304.0, 96.0)),   # top, right of the doorway
+        Primitive(p0=(96.0, 204.0), p1=(304.0, 204.0)),  # bottom
+    ]
+
+
+def test_snap_room_box_wall_broken_at_centre_still_snaps():
+    # The room's centre (x=200) lands in the top-wall doorway, so no top segment
+    # crosses it; coverage over the room's extent (not a centre-crossing test) must
+    # still recover the top wall at y=96. This is the AF_Raster failure mode.
+    vlm_box = (100.0, 100.0, 300.0, 200.0)
+    box, snapped = snap_room_box(vlm_box, _room_with_center_doorway())
+    assert snapped
+    assert box == (96.0, 96.0, 304.0, 204.0)
+
+
 def test_snap_box_ignores_leader_touching_text():
     # A door leaf + a callout leader whose far end sits under its bubble text.
     # Without the text filter the leader would stretch the box to x=160.
