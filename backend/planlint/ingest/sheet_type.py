@@ -83,8 +83,9 @@ _COVER_MARKERS = (
 
 # Types that win over a plain-majority vote when present in a page's titles: a
 # page carrying any real schedule should be parsed as one even when detail
-# drawings share the sheet.
-_PRIORITY = (SheetType.SCHEDULE,)
+# drawings share the sheet; and a page titled as an RCP/electrical plan is an
+# electrical sheet even though "…ELECTRICAL PLAN" also carries the word PLAN.
+_PRIORITY = (SheetType.SCHEDULE, SheetType.RCP_ELECTRICAL)
 
 
 def title_lines(page) -> list[str]:
@@ -102,6 +103,22 @@ def title_lines(page) -> list[str]:
         return []
     top = max(size for size, _ in candidates)
     return [text for size, text in candidates if size >= top - 0.5]
+
+
+def title_lines_from_ocr(lines: list[tuple[float, str]]) -> list[str]:
+    """Drawing-title lines from OCR output — (text_height, text) pairs. The OCR
+    analogue of `title_lines` for a page with no text layer (a flattened or scanned
+    PDF): keyword-bearing title-like lines set at the largest tier, keyed on OCR box
+    height instead of font size (relative, so it adapts to the page's scan scale)."""
+    candidates = [
+        (h, t.strip())
+        for h, t in lines
+        if _looks_like_title(t) and _TITLE_KEYWORD.search(t.upper())
+    ]
+    if not candidates:
+        return []
+    top = max(h for h, _ in candidates)
+    return [t for h, t in candidates if h >= 0.7 * top]
 
 
 # A sheet number: a discipline letter (or two) then a dotted or dashed number —
@@ -155,7 +172,7 @@ def _classify_title(title: str) -> SheetType:
         return SheetType.ELEVATION
     if "SECTION" in t:
         return SheetType.SECTION
-    if "REFLECTED CEILING" in t or "ELECTRICAL" in t or "RCP" in t:
+    if "REFLECTED CEILING" in t or "ELECTRICAL" in t or "RCP" in t or re.search(r"\bELEC\b", t):
         return SheetType.RCP_ELECTRICAL
     if "ROOF" in t:
         return SheetType.ROOF

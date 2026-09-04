@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent, ModelRetry
 
+from planlint.ingest.sheet_type import SheetType
 from planlint.models import AssetType, BBox
 
 import re
@@ -240,6 +241,67 @@ async def detect_page(image_png: bytes, model) -> VlmPage:
         scaled.append(entity.model_copy(update={"box": to_points(entity.box), "name": name}))
     refs = [ref.model_copy(update={"box": to_points(ref.box)}) for ref in page.references]
     return VlmPage(entities=scaled, references=refs, scale_text=page.scale_text)
+
+
+class VlmSheetType(BaseModel):
+    """A sheet's drawing type as read by the vision model — used only to route the
+    page (skip / plan detector / elevation detector / schedule), never to decide
+    compliance. The fallback for a page with no text layer, where the deterministic
+    title-driven classifier has nothing to read."""
+
+    sheet_type: SheetType
+
+
+_SHEET_INSTRUCTIONS = """\
+Classify this single architectural drawing sheet into exactly one type, reading its
+title block and overall layout. Return one sheet_type:
+
+- floor_plan: a top-down plan of rooms and walls for one level.
+- elevation: an exterior vertical view of a facade (front / rear / side).
+- section: a vertical cut through the building, floors and roof shown in profile.
+- schedule: a table/matrix of doors, windows, finishes or fixtures (rows & columns).
+- foundation: a foundation or footing plan.
+- roof: a roof plan or roof-framing plan.
+- site: a site, plot, survey or landscape plan.
+- rcp_electrical: a reflected ceiling plan, or an electrical / lighting / power plan
+  (ceiling grid, light fixtures, switches, outlets). Choose this over floor_plan
+  whenever the sheet is about ceilings or electrical, even if the title says "PLAN".
+- detail: a zoomed-in construction detail (a wall section, a stair or joint detail).
+- cover_notes: a cover sheet, drawing index, general notes, specifications, or an
+  abbreviations/legend page — no drawn building geometry to measure.
+- other: none of the above, or genuinely ambiguous.
+
+Precedence when a sheet mixes content:
+- If it carries a door and/or window SCHEDULE — a table with MARK / SIZE columns
+  listing openings — return schedule, EVEN IF the rest of the sheet is details or
+  elevations. A schedule holds opening sizes that must not be skipped.
+- Otherwise prefer the specific type over floor_plan when the sheet is clearly an
+  elevation, section, or RCP/electrical."""
+
+
+def build_sheet_classifier(model) -> Agent:
+    """VLM agent that names a sheet's drawing type for routing. Temperature 0 for
+    reproducibility; the output is constrained to the SheetType enum."""
+    return Agent(
+        model,
+        output_type=VlmSheetType,
+        instructions=_SHEET_INSTRUCTIONS,
+        model_settings={"temperature": 0.0},
+        retries=1,
+    )
+
+
+async def classify_sheet_page(image_png: bytes, model) -> SheetType:
+    """Classify one rendered sheet image into a SheetType via the VLM — the no-text
+    fallback for the deterministic title classifier."""
+    agent = build_sheet_classifier(model)
+    result = await agent.run(
+        [
+            "Classify this architectural drawing sheet.",
+            BinaryContent(data=image_png, media_type="image/png"),
+        ]
+    )
+    return result.output.sheet_type
 
 
 def detect_from_labels(labels) -> VlmPage:

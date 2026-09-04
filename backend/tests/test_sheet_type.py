@@ -111,3 +111,37 @@ def test_cover_marker_beats_thumbnail_titles():
 
 def test_no_titles_is_other():
     assert classify_titles([]) == SheetType.OTHER
+
+
+def test_ocr_title_lines_keep_largest_tier_and_classify():
+    # OCR of a no-text sheet: the big title line vs small callouts. Only the
+    # largest-tier keyword line survives, and it classifies the sheet.
+    from planlint.ingest.sheet_type import title_lines_from_ocr
+
+    lines = [
+        (28.0, "1ST FLOOR RCP / ELECTRICAL PLAN"),  # the title (tall)
+        (9.0, "SEE PLAN A2.1"),                       # a small callout
+        (9.0, "REFERENCE NOTES"),                     # small furniture
+    ]
+    titles = title_lines_from_ocr(lines)
+    assert titles == ["1ST FLOOR RCP / ELECTRICAL PLAN"]
+    assert classify_titles(titles) == SheetType.RCP_ELECTRICAL
+
+
+def test_electrical_plan_title_beats_the_word_plan():
+    # 'REFLECTED CEILING PLAN & ELECTRICAL PLAN' and the abbreviation 'ELEC. PLAN'
+    # both carry 'PLAN', but an electrical/RCP sheet must route to skip, not to the
+    # plan detector — RCP has vote priority and 'ELEC' is recognized.
+    assert (
+        classify_titles(
+            ["1ST FLOOR - REFLECTED CEILING PLAN & ELECTRICAL PLAN", "ELEC. PLAN"]
+        )
+        == SheetType.RCP_ELECTRICAL
+    )
+    assert classify_titles(["ELEC. PLAN"]) == SheetType.RCP_ELECTRICAL
+
+
+def test_ocr_title_lines_empty_when_no_keyword():
+    from planlint.ingest.sheet_type import title_lines_from_ocr
+
+    assert title_lines_from_ocr([(20.0, "AMERICAN FARMHOUSE"), (8.0, "12-25-2020")]) == []

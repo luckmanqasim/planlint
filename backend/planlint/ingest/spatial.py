@@ -37,11 +37,20 @@ from planlint.ingest.specs import detect_spec_codes, parse_spec_index
 from planlint.ingest.sheet_type import (
     SheetType,
     classify_sheet,
+    classify_titles,
     resolve_sheet_number,
     title_lines,
+    title_lines_from_ocr,
 )
 from planlint.ingest.vector_geometry import classify_opening_vector
-from planlint.ingest.vlm import RENDER_ZOOM, VlmEntity, VlmPage, detect_page, detect_from_labels
+from planlint.ingest.vlm import (
+    RENDER_ZOOM,
+    VlmEntity,
+    VlmPage,
+    classify_sheet_page,
+    detect_page,
+    detect_from_labels,
+)
 from planlint.models import (
     AssetType,
     BBox,
@@ -154,6 +163,38 @@ _ELEVATION_TYPES = frozenset({SheetType.ELEVATION, SheetType.SECTION})
 
 async def _noop_emit(_: RunEvent) -> None:
     return None
+
+
+def _ocr_classify(png: bytes) -> SheetType:
+    """Classify a no-text page from OCR of its render — the offline fallback.
+    OTHER when OCR is unavailable or finds no title. Sync/CPU-bound."""
+    lines: list[tuple[float, str]] = []
+    for quad, text in ocr_boxes(png):
+        ys = [float(p[1]) for p in quad]
+        lines.append((max(ys) - min(ys), text))
+    if not lines:
+        return SheetType.OTHER
+    return classify_titles(title_lines_from_ocr(lines), " ".join(t for _, t in lines).upper())
+
+
+async def _classify_sheet(page, model) -> SheetType:
+    """A page's sheet type. The deterministic title-driven classifier reads the text
+    layer first; a page with no text layer (a flattened or scanned PDF) would else
+    classify as OTHER and route every page to the plan detector — so it falls back to
+    the vision model when one is available (fast, no OCR dependency, robust on scans),
+    and to OCR only offline. Mirrors the semantic parser's LLM-first `auto` policy."""
+    base = classify_sheet(page)
+    if base is not SheetType.OTHER or page.get_text().strip():
+        return base  # decided from the text layer (or a real text layer exists)
+    png = await asyncio.to_thread(
+        lambda: page.get_pixmap(matrix=pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)).tobytes("png")
+    )
+    if model is not None and not settings.planlint_offline_sample:
+        try:
+            return await classify_sheet_page(png, model)
+        except Exception:  # no vision key / call failed → OCR fallback
+            pass
+    return await asyncio.to_thread(_ocr_classify, png)
 
 
 def _analyze_page(page) -> tuple[str, list, list, bytes | None]:
@@ -269,7 +310,7 @@ async def ingest_floorplan(
         sheet_types: list[SheetType] = []
         for i in range(total):
             try:
-                sheet_types.append(await asyncio.to_thread(classify_sheet, doc[i]))
+                sheet_types.append(await _classify_sheet(doc[i], model))
             except Exception:  # a page we can't classify still gets processed
                 sheet_types.append(SheetType.OTHER)
         schedule_index: dict[str, OpeningSpec] = {}

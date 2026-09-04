@@ -7,7 +7,13 @@ from pydantic_ai import models
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from planlint.ingest.vlm import VlmEntity, _resolve_space_name, detect_page
+from planlint.ingest.sheet_type import SheetType
+from planlint.ingest.vlm import (
+    VlmEntity,
+    _resolve_space_name,
+    classify_sheet_page,
+    detect_page,
+)
 from planlint.models import AssetType
 
 models.ALLOW_MODEL_REQUESTS = False
@@ -179,6 +185,13 @@ async def test_bad_reference_box_triggers_retry():
     page = await detect_page(png_100x80(), FunctionModel(model_fn))
     assert calls["n"] == 2
     assert page.references[0].target_sheet == "A1.7"
+
+
+async def test_classify_sheet_page_maps_to_enum():
+    # The no-text fallback: the VLM names the sheet type, constrained to SheetType.
+    args = {"sheet_type": "rcp_electrical"}
+    st = await classify_sheet_page(png_100x80(), FunctionModel(lambda m, i: structured(i, args)))
+    assert st is SheetType.RCP_ELECTRICAL
 
 
 async def test_persistent_bad_boxes_raise():
